@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto"
+import { durableAgentId } from "./agent-id.js"
 import {
   extractImages,
   followUpPrompt,
-  formatTranscript,
+  openingPrompt,
   trailingToolResults,
 } from "./messages.js"
-import { resolveModelSelection, type CursorModelListItem } from "./models.js"
+import { resolveModelSelection, type CursorModelListItem, type CursorParameterValue } from "./models.js"
 import type {
   ChatCompletionRequest,
   CompletionEvent,
@@ -13,6 +14,7 @@ import type {
 } from "./openai-types.js"
 import {
   getDefaultRuntime,
+  isMissingAgentError,
   toolsToCustomTools,
   type CursorAgent,
   type CursorRun,
@@ -41,6 +43,7 @@ type HeldTurn = {
 
 type Session = {
   key: string
+  sessionId: string
   apiKey: string
   cwd: string
   modelId: string
@@ -124,6 +127,7 @@ export class CursorBridge {
     }
     const session: Session = {
       key,
+      sessionId,
       apiKey: this.apiKey,
       cwd: this.cwd,
       modelId,
@@ -164,16 +168,18 @@ export class CursorBridge {
       session.run = undefined
     }
 
-    const reuse = Boolean(hasTools && session.agent)
-    const agent =
-      reuse && session.agent
-        ? session.agent
-        : await this.runtime.createAgent({
+    const attached = hasTools
+      ? await this.attachDurableAgent(session, model)
+      : {
+          agent: await this.runtime.createAgent({
             apiKey: session.apiKey,
             cwd: session.cwd,
             model,
-            mcp: hasTools,
-          })
+            mcp: false,
+          }),
+          continued: false,
+        }
+    const agent = attached.agent
 
     const held = this.newHeld()
     const customTools = toolsToCustomTools(request.tools, (name) =>
@@ -195,9 +201,9 @@ export class CursorBridge {
 
     try {
       const run = await agent.send({
-        text: reuse
+        text: attached.continued
           ? followUpPrompt(request.messages)
-          : formatTranscript(request.messages, { hasTools }),
+          : openingPrompt(request.messages, { hasTools }),
         images: extractImages(request.messages),
         customTools,
         force: true,
@@ -224,6 +230,27 @@ export class CursorBridge {
           await agent.dispose().catch(() => undefined)
         }
       }
+    }
+  }
+
+  private async attachDurableAgent(
+    session: Session,
+    model: { id: string; params?: CursorParameterValue[] },
+  ): Promise<{ agent: CursorAgent; continued: boolean }> {
+    if (session.agent) return { agent: session.agent, continued: true }
+    const agentId = durableAgentId(session.sessionId, session.modelId, session.cwd)
+    const input = {
+      apiKey: session.apiKey,
+      cwd: session.cwd,
+      model,
+      mcp: true,
+      agentId,
+    }
+    try {
+      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true }
+    } catch (error) {
+      if (!isMissingAgentError(error)) throw error
+      return { agent: await this.runtime.createAgent(input), continued: false }
     }
   }
 

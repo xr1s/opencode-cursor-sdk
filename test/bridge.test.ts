@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
+import { durableAgentId } from "../src/agent-id.js"
 import { CursorBridge, resetBridges } from "../src/bridge.js"
 import { eventsToCompletion } from "../src/completions.js"
 import type { ChatCompletionRequest } from "../src/openai-types.js"
@@ -15,21 +16,36 @@ type ScriptStep =
 function scriptedRuntime(
   script: ScriptStep[] | ((input: CreateAgentInput) => ScriptStep[]),
   models: CursorModelListItem[] = [{ id: "composer-2.5" }],
-): CursorRuntime & { prompts: string[]; created: CreateAgentInput[]; disposed: number } {
+): CursorRuntime & {
+  prompts: string[]
+  created: CreateAgentInput[]
+  resumed: string[]
+  disposed: number
+} {
   const prompts: string[] = []
   const created: CreateAgentInput[] = []
-  const runtime: CursorRuntime & { prompts: string[]; created: CreateAgentInput[]; disposed: number } = {
+  const resumed: string[] = []
+  const store = new Map<string, CursorAgent>()
+  const runtime: CursorRuntime & {
+    prompts: string[]
+    created: CreateAgentInput[]
+    resumed: string[]
+    disposed: number
+  } = {
     prompts,
     created,
+    resumed,
     disposed: 0,
     async listModels() {
       return models
     },
     async createAgent(input) {
       created.push(input)
+      const agentId = input.agentId ?? `agent-throwaway-${created.length}`
       const steps = typeof script === "function" ? script(input) : script.map((step) => ({ ...step }))
       let index = 0
       const agent: CursorAgent = {
+        agentId,
         async send(sendInput: SendInput) {
           prompts.push(sendInput.text)
           return {
@@ -62,6 +78,13 @@ function scriptedRuntime(
           runtime.disposed++
         },
       }
+      store.set(agentId, agent)
+      return agent
+    },
+    async resumeAgent(agentId) {
+      const agent = store.get(agentId)
+      if (!agent) throw new Error(`Agent ${agentId} not found`)
+      resumed.push(agentId)
       return agent
     },
   }
@@ -97,6 +120,7 @@ test("text-only completion streams deltas once and reports usage", async () => {
   assert.equal(events.at(-1)?.type, "finish")
   assert.ok(events.find((event) => event.type === "usage"))
   assert.equal(runtime.created[0]?.mcp, false)
+  assert.equal(runtime.created[0]?.agentId, undefined)
 })
 
 test("hold-mode tool calls pause the run until tool results arrive", async () => {
@@ -119,6 +143,10 @@ test("hold-mode tool calls pause the run until tool results arrive", async () =>
   assert.ok(finish?.type === "finish")
   assert.equal(finish.reason, "tool_calls")
   assert.equal(runtime.created[0]?.mcp, true)
+  assert.equal(
+    runtime.created[0]?.agentId,
+    durableAgentId("s2", "composer-2.5", process.cwd()),
+  )
 
   const second = await bridge.complete(
     request({
@@ -195,16 +223,25 @@ test("title-style calls do not mix into a held tool loop", async () => {
   await bridge.dispose()
 })
 
-test("independent turns send a full transcript instead of a follow-up", async () => {
+test("throwaway turns send an opening prompt, not a follow-up", async () => {
   await resetBridges()
   const runtime = scriptedRuntime([{ type: "text", text: "ok" }])
   const bridge = new CursorBridge({ apiKey: "k", runtime })
   await bridge.complete(request({ messages: [{ role: "user", content: "first" }] }), { sessionId: "s4" })
-  await bridge.complete(request({ messages: [{ role: "user", content: "second" }] }), { sessionId: "s4" })
+  await bridge.complete(
+    request({
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "second" },
+      ],
+    }),
+    { sessionId: "s4" },
+  )
   assert.equal(runtime.created.length, 2)
   assert.match(runtime.prompts[0] ?? "", /first/)
   assert.match(runtime.prompts[1] ?? "", /second/)
-  assert.doesNotMatch(runtime.prompts[1] ?? "", /^second$/)
+  assert.doesNotMatch(runtime.prompts[1] ?? "", /first/)
   await bridge.dispose()
 })
 
@@ -264,10 +301,48 @@ test("tool turns reuse the Cursor agent and send only the follow-up", async () =
   )
   assert.equal(runtime.created.length, 2)
   assert.equal(runtime.disposed, 1)
-  assert.match(runtime.prompts[0] ?? "", /first/)
+  assert.equal(runtime.prompts[0], "first")
   assert.match(runtime.prompts[1] ?? "", /Generate a 3 word title/)
   assert.equal(runtime.prompts[2], "second")
   await bridge.dispose()
+})
+
+test("a new process resumes the Cursor agent and does not replay history", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "text", text: "one" },
+    { type: "end" },
+    { type: "text", text: "two" },
+  ])
+  const first = new CursorBridge({ apiKey: "k", cwd: "/tmp/proj", runtime })
+  await first.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "first" }] }),
+    { sessionId: "s6" },
+  )
+  await first.dispose()
+  await resetBridges()
+
+  const second = new CursorBridge({ apiKey: "k", cwd: "/tmp/proj", runtime })
+  const events = await second.complete(
+    request({
+      tools: bashTools,
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "one" },
+        { role: "user", content: "second" },
+      ],
+    }),
+    { sessionId: "s6" },
+  )
+  assert.deepEqual(
+    events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["two"],
+  )
+  assert.equal(runtime.created.length, 1)
+  assert.deepEqual(runtime.resumed, [durableAgentId("s6", "composer-2.5", "/tmp/proj")])
+  assert.equal(runtime.prompts[0], "first")
+  assert.equal(runtime.prompts[1], "second")
+  await second.dispose()
 })
 
 test("eventsToCompletion builds an OpenAI-shaped tool_calls response", () => {

@@ -41,6 +41,7 @@ export type CursorRun = {
 }
 
 export type CursorAgent = {
+  agentId: string
   send(input: SendInput): Promise<CursorRun>
   dispose(): Promise<void>
 }
@@ -49,17 +50,14 @@ export type CreateAgentInput = {
   apiKey: string
   cwd: string
   model: { id: string; params?: CursorParameterValue[] }
-  /**
-   * When true, the local agent may offer MCP tools (OpenCode's caller tools
-   * registered as `customTools`). `tools: []` would also hide MCP, which is
-   * why this uses the `"mcp"` allowlist instead of an empty list.
-   */
   mcp?: boolean
+  agentId?: string
 }
 
 export type CursorRuntime = {
   listModels(apiKey: string): Promise<import("./models.js").CursorModelListItem[]>
   createAgent(input: CreateAgentInput): Promise<CursorAgent>
+  resumeAgent(agentId: string, input: CreateAgentInput): Promise<CursorAgent>
 }
 
 export function toolsToCustomTools(
@@ -91,6 +89,11 @@ export function getDefaultRuntime(): CursorRuntime {
   throw new Error("Cursor runtime is not configured")
 }
 
+export function isMissingAgentError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /not found/i.test(message)
+}
+
 export async function loadSdkRuntime(): Promise<CursorRuntime> {
   const { Agent, Cursor } = await import("@cursor/sdk")
   return {
@@ -98,40 +101,78 @@ export async function loadSdkRuntime(): Promise<CursorRuntime> {
       return (await Cursor.models.list({ apiKey })) as import("./models.js").CursorModelListItem[]
     },
     async createAgent(input) {
-      const agent = await Agent.create({
-        apiKey: input.apiKey,
-        model: input.model,
-        tools: input.mcp ? ["mcp"] : [],
-        local: { cwd: input.cwd },
-      })
-      return {
-        async send(sendInput) {
-          const run = await agent.send(
-            sendInput.images?.length
-              ? { text: sendInput.text, images: sendInput.images }
-              : sendInput.text,
-            {
-              onDelta: sendInput.onDelta
-                ? ({ update }: { update: { type: string; text?: string } }) =>
-                    sendInput.onDelta?.(update)
-                : undefined,
-              local: {
-                force: sendInput.force,
-                customTools: sendInput.customTools as never,
-              },
-            },
-          )
-          return {
-            wait: () => run.wait(),
-            cancel: async () => {
-              if (run.supports?.("cancel")) await run.cancel()
-            },
-          }
+      return wrapSdkAgent(
+        await Agent.create({
+          apiKey: input.apiKey,
+          model: input.model,
+          agentId: input.agentId,
+          tools: input.mcp ? ["mcp"] : [],
+          local: { cwd: input.cwd },
+        }),
+      )
+    },
+    async resumeAgent(agentId, input) {
+      return wrapSdkAgent(
+        await Agent.resume(agentId, {
+          apiKey: input.apiKey,
+          model: input.model,
+          tools: input.mcp ? ["mcp"] : [],
+          local: { cwd: input.cwd },
+        }),
+      )
+    },
+  }
+}
+
+type SdkAgent = {
+  readonly agentId: string
+  send(
+    message: string | { text: string; images?: PromptImage[] },
+    options?: {
+      onDelta?: (event: { update: { type: string; text?: string } }) => void | Promise<void>
+      local?: { force?: boolean; customTools?: never }
+    },
+  ): Promise<{
+    wait(): Promise<{
+      status: CursorRunStatus
+      result?: string
+      error?: { message: string }
+      usage?: CursorUsage
+    }>
+    cancel(): Promise<void>
+    supports?(capability: string): boolean
+  }>
+  [Symbol.asyncDispose](): Promise<void>
+}
+
+function wrapSdkAgent(agent: SdkAgent): CursorAgent {
+  return {
+    agentId: agent.agentId,
+    async send(sendInput) {
+      const run = await agent.send(
+        sendInput.images?.length
+          ? { text: sendInput.text, images: sendInput.images }
+          : sendInput.text,
+        {
+          onDelta: sendInput.onDelta
+            ? ({ update }: { update: { type: string; text?: string } }) =>
+                sendInput.onDelta?.(update)
+            : undefined,
+          local: {
+            force: sendInput.force,
+            customTools: sendInput.customTools as never,
+          },
         },
-        async dispose() {
-          await agent[Symbol.asyncDispose]()
+      )
+      return {
+        wait: () => run.wait(),
+        cancel: async () => {
+          if (run.supports?.("cancel")) await run.cancel()
         },
       }
+    },
+    async dispose() {
+      await agent[Symbol.asyncDispose]()
     },
   }
 }

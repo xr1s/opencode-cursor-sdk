@@ -3,7 +3,7 @@ import { test } from "node:test"
 import {
   extractImages,
   followUpPrompt,
-  formatTranscript,
+  openingPrompt,
   parseDataUrl,
   textOf,
   trailingToolResults,
@@ -38,21 +38,26 @@ test("trailingToolResults only reads a suffix of tool messages", () => {
   assert.deepEqual(results, [{ id: "c1", content: "out" }])
 })
 
-test("formatTranscript includes system prompt and a no-tools guard", () => {
-  const text = formatTranscript(
+test("openingPrompt keeps system text and the latest user turn", () => {
+  const text = openingPrompt(
     [
       { role: "system", content: "You are OpenCode." },
       { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi" },
+      { role: "user", content: "Next" },
     ],
     { hasTools: false },
   )
   assert.match(text, /You are OpenCode/)
-  assert.match(text, /User:\nHello/)
+  assert.match(text, /Next/)
+  assert.doesNotMatch(text, /Hello/)
+  assert.doesNotMatch(text, /Assistant/)
   assert.match(text, /Reply with text only/)
 })
 
-test("formatTranscript omits the no-tools guard when tools are present", () => {
-  const text = formatTranscript([{ role: "user", content: "Hi" }], { hasTools: true })
+test("openingPrompt omits the no-tools guard when tools are present", () => {
+  const text = openingPrompt([{ role: "user", content: "Hi" }], { hasTools: true })
+  assert.equal(text, "Hi")
   assert.doesNotMatch(text, /Reply with text only/)
 })
 

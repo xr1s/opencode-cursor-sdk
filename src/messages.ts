@@ -42,10 +42,6 @@ export function parseDataUrl(url: string): PromptImage | undefined {
   return { mimeType: match[1], data: match[2] }
 }
 
-/**
- * Trailing `tool` messages from the latest assistant tool-call turn.
- * Returns undefined when this request is a new user (or first) turn.
- */
 export function trailingToolResults(messages: ChatMessage[]): ToolResult[] | undefined {
   if (messages.length === 0) return undefined
   const results: ToolResult[] = []
@@ -69,43 +65,15 @@ export function latestUserText(messages: ChatMessage[]): string {
   return lastUser ? textOf(lastUser.content) : ""
 }
 
-/**
- * Flatten an OpenAI-shaped transcript into a single Cursor `send()` prompt.
- * Used for the first main-turn on a Cursor agent, and for throwaway
- * title/compaction requests that must not share conversation state.
- */
-export function formatTranscript(messages: ChatMessage[], opts?: { hasTools?: boolean }): string {
+export function openingPrompt(messages: ChatMessage[], opts?: { hasTools?: boolean }): string {
   const lines: string[] = []
   for (const message of messages) {
+    if (message.role !== "system" && message.role !== "developer") continue
     const text = textOf(message.content).trim()
-    if (message.role === "system" || message.role === "developer") {
-      if (text) lines.push(text)
-      continue
-    }
-    if (message.role === "user") {
-      lines.push(text ? `User:\n${text}` : "User:")
-      continue
-    }
-    if (message.role === "assistant") {
-      if (text) lines.push(`Assistant:\n${text}`)
-      if (message.tool_calls?.length) {
-        for (const call of message.tool_calls) {
-          lines.push(
-            `Assistant tool call ${call.id}: ${call.function.name}(${call.function.arguments})`,
-          )
-        }
-      }
-      continue
-    }
-    if (message.role === "tool") {
-      lines.push(`Tool result ${message.tool_call_id ?? ""}:\n${text}`)
-    }
+    if (text) lines.push(text)
   }
-
-  if (!opts?.hasTools) {
-    lines.push(NO_TOOLS_GUARD)
-  }
-
+  lines.push(latestUserText(messages).trim() || "Continue.")
+  if (!opts?.hasTools) lines.push(NO_TOOLS_GUARD)
   return lines.filter(Boolean).join("\n\n")
 }
 

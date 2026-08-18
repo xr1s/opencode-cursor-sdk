@@ -3,14 +3,12 @@ import {
   PACKAGE_MARKER,
   loadSdkRuntime,
   toConfigModels
-} from "./chunk-NGGPGXQM.js";
+} from "./chunk-DJICIWQL.js";
 
 // src/plugin-core.ts
 import { homedir } from "os";
 import { join } from "path";
-import { readFileSync } from "fs";
 import { readFile } from "fs/promises";
-import { fileURLToPath } from "url";
 var DEFAULT_PROVIDER_ID = "cursor";
 async function readStoredApiKey(providerId) {
   try {
@@ -33,15 +31,7 @@ async function resolveApiKey(providerId, readApiKey) {
   return stored || env || void 0;
 }
 function isCursorProvider(npm) {
-  if (typeof npm !== "string" || !npm) return false;
-  if (npm.includes(PACKAGE_MARKER)) return true;
-  if (!npm.startsWith("file:")) return false;
-  try {
-    const pkg = JSON.parse(readFileSync(join(fileURLToPath(npm), "package.json"), "utf-8"));
-    return pkg.name === PACKAGE_MARKER;
-  } catch {
-    return false;
-  }
+  return typeof npm === "string" && npm.includes(PACKAGE_MARKER);
 }
 function createCursorPlugin(deps = {}) {
   return async ({ directory }) => {

@@ -21,6 +21,10 @@ function getDefaultRuntime() {
   if (defaultRuntime) return defaultRuntime;
   throw new Error("Cursor runtime is not configured");
 }
+function isMissingAgentError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found/i.test(message);
+}
 async function loadSdkRuntime() {
   const { Agent, Cursor } = await import("@cursor/sdk");
   return {
@@ -28,35 +32,51 @@ async function loadSdkRuntime() {
       return await Cursor.models.list({ apiKey });
     },
     async createAgent(input) {
-      const agent = await Agent.create({
-        apiKey: input.apiKey,
-        model: input.model,
-        tools: input.mcp ? ["mcp"] : [],
-        local: { cwd: input.cwd }
-      });
+      return wrapSdkAgent(
+        await Agent.create({
+          apiKey: input.apiKey,
+          model: input.model,
+          agentId: input.agentId,
+          tools: input.mcp ? ["mcp"] : [],
+          local: { cwd: input.cwd }
+        })
+      );
+    },
+    async resumeAgent(agentId, input) {
+      return wrapSdkAgent(
+        await Agent.resume(agentId, {
+          apiKey: input.apiKey,
+          model: input.model,
+          tools: input.mcp ? ["mcp"] : [],
+          local: { cwd: input.cwd }
+        })
+      );
+    }
+  };
+}
+function wrapSdkAgent(agent) {
+  return {
+    agentId: agent.agentId,
+    async send(sendInput) {
+      const run = await agent.send(
+        sendInput.images?.length ? { text: sendInput.text, images: sendInput.images } : sendInput.text,
+        {
+          onDelta: sendInput.onDelta ? ({ update }) => sendInput.onDelta?.(update) : void 0,
+          local: {
+            force: sendInput.force,
+            customTools: sendInput.customTools
+          }
+        }
+      );
       return {
-        async send(sendInput) {
-          const run = await agent.send(
-            sendInput.images?.length ? { text: sendInput.text, images: sendInput.images } : sendInput.text,
-            {
-              onDelta: sendInput.onDelta ? ({ update }) => sendInput.onDelta?.(update) : void 0,
-              local: {
-                force: sendInput.force,
-                customTools: sendInput.customTools
-              }
-            }
-          );
-          return {
-            wait: () => run.wait(),
-            cancel: async () => {
-              if (run.supports?.("cancel")) await run.cancel();
-            }
-          };
-        },
-        async dispose() {
-          await agent[Symbol.asyncDispose]();
+        wait: () => run.wait(),
+        cancel: async () => {
+          if (run.supports?.("cancel")) await run.cancel();
         }
       };
+    },
+    async dispose() {
+      await agent[Symbol.asyncDispose]();
     }
   };
 }
@@ -292,6 +312,7 @@ export {
   toolsToCustomTools,
   setDefaultRuntime,
   getDefaultRuntime,
+  isMissingAgentError,
   loadSdkRuntime,
   CURSOR_LOCAL_BASE_URL,
   PACKAGE_MARKER

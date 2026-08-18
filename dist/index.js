@@ -2,12 +2,13 @@ import {
   CURSOR_LOCAL_BASE_URL,
   FALLBACK_MODELS,
   getDefaultRuntime,
+  isMissingAgentError,
   loadSdkRuntime,
   resolveModelSelection,
   setDefaultRuntime,
   toConfigModels,
   toolsToCustomTools
-} from "./chunk-NGGPGXQM.js";
+} from "./chunk-DJICIWQL.js";
 
 // src/index.ts
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -17,6 +18,13 @@ import { randomUUID as randomUUID2 } from "crypto";
 
 // src/bridge.ts
 import { randomUUID } from "crypto";
+
+// src/agent-id.ts
+import { createHash } from "crypto";
+function durableAgentId(sessionId, modelId, cwd) {
+  const digest = createHash("sha256").update(`${sessionId}\0${modelId}\0${cwd}`).digest("hex").slice(0, 32);
+  return `agent-oc-${digest}`;
+}
 
 // src/messages.ts
 var NO_TOOLS_GUARD = "Do not call tools, search the filesystem, or run shell commands. Reply with text only.";
@@ -69,39 +77,15 @@ function latestUserText(messages) {
   const lastUser = [...messages].reverse().find((message) => message.role === "user");
   return lastUser ? textOf(lastUser.content) : "";
 }
-function formatTranscript(messages, opts) {
+function openingPrompt(messages, opts) {
   const lines = [];
   for (const message of messages) {
+    if (message.role !== "system" && message.role !== "developer") continue;
     const text = textOf(message.content).trim();
-    if (message.role === "system" || message.role === "developer") {
-      if (text) lines.push(text);
-      continue;
-    }
-    if (message.role === "user") {
-      lines.push(text ? `User:
-${text}` : "User:");
-      continue;
-    }
-    if (message.role === "assistant") {
-      if (text) lines.push(`Assistant:
-${text}`);
-      if (message.tool_calls?.length) {
-        for (const call of message.tool_calls) {
-          lines.push(
-            `Assistant tool call ${call.id}: ${call.function.name}(${call.function.arguments})`
-          );
-        }
-      }
-      continue;
-    }
-    if (message.role === "tool") {
-      lines.push(`Tool result ${message.tool_call_id ?? ""}:
-${text}`);
-    }
+    if (text) lines.push(text);
   }
-  if (!opts?.hasTools) {
-    lines.push(NO_TOOLS_GUARD);
-  }
+  lines.push(latestUserText(messages).trim() || "Continue.");
+  if (!opts?.hasTools) lines.push(NO_TOOLS_GUARD);
   return lines.filter(Boolean).join("\n\n");
 }
 function followUpPrompt(messages) {
@@ -163,6 +147,7 @@ var CursorBridge = class {
     }
     const session = {
       key,
+      sessionId,
       apiKey: this.apiKey,
       cwd: this.cwd,
       modelId,
@@ -189,13 +174,16 @@ var CursorBridge = class {
       await session.run?.cancel().catch(() => void 0);
       session.run = void 0;
     }
-    const reuse = Boolean(hasTools && session.agent);
-    const agent = reuse && session.agent ? session.agent : await this.runtime.createAgent({
-      apiKey: session.apiKey,
-      cwd: session.cwd,
-      model,
-      mcp: hasTools
-    });
+    const attached = hasTools ? await this.attachDurableAgent(session, model) : {
+      agent: await this.runtime.createAgent({
+        apiKey: session.apiKey,
+        cwd: session.cwd,
+        model,
+        mcp: false
+      }),
+      continued: false
+    };
+    const agent = attached.agent;
     const held = this.newHeld();
     const customTools = toolsToCustomTools(
       request.tools,
@@ -214,7 +202,7 @@ var CursorBridge = class {
     };
     try {
       const run = await agent.send({
-        text: reuse ? followUpPrompt(request.messages) : formatTranscript(request.messages, { hasTools }),
+        text: attached.continued ? followUpPrompt(request.messages) : openingPrompt(request.messages, { hasTools }),
         images: extractImages(request.messages),
         customTools,
         force: true,
@@ -241,6 +229,23 @@ var CursorBridge = class {
           await agent.dispose().catch(() => void 0);
         }
       }
+    }
+  }
+  async attachDurableAgent(session, model) {
+    if (session.agent) return { agent: session.agent, continued: true };
+    const agentId = durableAgentId(session.sessionId, session.modelId, session.cwd);
+    const input = {
+      apiKey: session.apiKey,
+      cwd: session.cwd,
+      model,
+      mcp: true,
+      agentId
+    };
+    try {
+      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true };
+    } catch (error) {
+      if (!isMissingAgentError(error)) throw error;
+      return { agent: await this.runtime.createAgent(input), continued: false };
     }
   }
   async resumeHeld(session, results, queue, abort) {

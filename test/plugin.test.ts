@@ -21,6 +21,9 @@ function runtime(models: Array<{ id: string; displayName?: string }>): CursorRun
     async createAgent() {
       throw new Error("unused")
     },
+    async resumeAgent() {
+      throw new Error("unused")
+    },
   }
 }
 
