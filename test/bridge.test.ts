@@ -12,6 +12,8 @@ type ScriptStep =
   | { type: "thinking"; text: string }
   | { type: "tool"; name: string; args?: Record<string, unknown>; id?: string }
   | { type: "end" }
+  | { type: "error"; error: string }
+  | { type: "throw"; error: string }
 
 function scriptedRuntime(
   script: ScriptStep[] | ((input: CreateAgentInput) => ScriptStep[]),
@@ -54,6 +56,12 @@ function scriptedRuntime(
               while (index < steps.length) {
                 const step = steps[index++]
                 if (step.type === "end") break
+                if (step.type === "error") {
+                  return { status: "error" as const, error: { message: step.error } }
+                }
+                if (step.type === "throw") {
+                  throw new Error(step.error)
+                }
                 if (step.type === "text") {
                   text += step.text
                   await sendInput.onDelta?.({ type: "text-delta", text: step.text })
@@ -359,3 +367,90 @@ test("eventsToCompletion builds an OpenAI-shaped tool_calls response", () => {
   assert.equal(choice.message.reasoning_content, "plan")
   assert.ok(Array.isArray(choice.message.tool_calls))
 })
+
+const AUTH_ERROR = "Authentication error If you are logged in, try logging out and back in."
+
+test("auth errors on a durable agent are retried after refresh", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "error", error: AUTH_ERROR },
+    { type: "text", text: "recovered" },
+  ])
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const events = await bridge.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "hello" }] }),
+    { sessionId: "s-auth" },
+  )
+  assert.deepEqual(
+    events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["recovered"],
+  )
+  assert.equal(events.find((event) => event.type === "error"), undefined)
+  assert.equal(runtime.created.length, 1)
+  assert.deepEqual(runtime.resumed, [durableAgentId("s-auth", "composer-2.5", process.cwd())])
+  await bridge.dispose()
+})
+
+test("resume auth errors fall back to creating a new agent", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([{ type: "text", text: "fresh" }])
+  const originalResume = runtime.resumeAgent.bind(runtime)
+  runtime.resumeAgent = async (agentId, input) => {
+    if (runtime.resumed.length === 0) {
+      runtime.resumed.push(agentId)
+      throw new Error(AUTH_ERROR)
+    }
+    return originalResume(agentId, input)
+  }
+  const bridge = new CursorBridge({ apiKey: "k", cwd: "/tmp/proj", runtime })
+  const events = await bridge.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "hello" }] }),
+    { sessionId: "s-auth-resume" },
+  )
+  assert.deepEqual(
+    events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["fresh"],
+  )
+  assert.equal(runtime.created.length, 1)
+  assert.equal(runtime.resumed[0], durableAgentId("s-auth-resume", "composer-2.5", "/tmp/proj"))
+  await bridge.dispose()
+})
+
+test("non-auth errors are not retried", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([{ type: "error", error: "model overloaded" }])
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const events = await bridge.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "hello" }] }),
+    { sessionId: "s-other-err" },
+  )
+  const error = events.find((event) => event.type === "error")
+  assert.ok(error && error.type === "error")
+  assert.equal(error.error, "model overloaded")
+  assert.equal(runtime.created.length, 1)
+  assert.equal(runtime.resumed.length, 0)
+  await bridge.dispose()
+})
+
+test("auth errors on throwaway turns retry with a new agent", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime((input) =>
+    input.mcp
+      ? [{ type: "text", text: "unused" }]
+      : runtime.created.length === 1
+        ? [{ type: "error", error: AUTH_ERROR }]
+        : [{ type: "text", text: "ok" }],
+  )
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const events = await bridge.complete(request({ messages: [{ role: "user", content: "hi" }] }), {
+    sessionId: "s-auth-throwaway",
+  })
+  assert.deepEqual(
+    events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["ok"],
+  )
+  assert.equal(runtime.created.length, 2)
+  await bridge.dispose()
+})
+
+

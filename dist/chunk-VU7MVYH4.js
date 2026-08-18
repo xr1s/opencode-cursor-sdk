@@ -21,9 +21,22 @@ function getDefaultRuntime() {
   if (defaultRuntime) return defaultRuntime;
   throw new Error("Cursor runtime is not configured");
 }
+function errorMessageOf(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error && "message" in error) {
+    return String(error.message ?? error);
+  }
+  return String(error);
+}
 function isMissingAgentError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /not found/i.test(message);
+  return /not found/i.test(errorMessageOf(error));
+}
+function isAuthError(error) {
+  const name = error instanceof Error ? error.name : typeof error === "object" && error && "errorName" in error ? String(error.errorName ?? "") : "";
+  if (name === "AuthenticationError") return true;
+  return /authentication error|unauthenticated|try logging out and back in/i.test(
+    errorMessageOf(error)
+  );
 }
 async function loadSdkRuntime() {
   const { Agent, Cursor } = await import("@cursor/sdk");
@@ -313,6 +326,7 @@ export {
   setDefaultRuntime,
   getDefaultRuntime,
   isMissingAgentError,
+  isAuthError,
   loadSdkRuntime,
   CURSOR_LOCAL_BASE_URL,
   PACKAGE_MARKER

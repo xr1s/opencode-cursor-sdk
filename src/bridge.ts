@@ -14,6 +14,7 @@ import type {
 } from "./openai-types.js"
 import {
   getDefaultRuntime,
+  isAuthError,
   isMissingAgentError,
   toolsToCustomTools,
   type CursorAgent,
@@ -168,66 +169,84 @@ export class CursorBridge {
       session.run = undefined
     }
 
-    const attached = hasTools
-      ? await this.attachDurableAgent(session, model)
-      : {
-          agent: await this.runtime.createAgent({
-            apiKey: session.apiKey,
-            cwd: session.cwd,
-            model,
-            mcp: false,
-          }),
-          continued: false,
+    let refresh = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const attached = hasTools
+        ? await this.attachDurableAgent(session, model, refresh)
+        : {
+            agent: await this.runtime.createAgent({
+              apiKey: session.apiKey,
+              cwd: session.cwd,
+              model,
+              mcp: false,
+            }),
+            continued: false,
+          }
+      const agent = attached.agent
+
+      const held = this.newHeld()
+      const customTools = toolsToCustomTools(request.tools, (name) =>
+        this.parkTool(held, name),
+      )
+
+      let streamedText = false
+      let keepHeld = false
+      if (hasTools) {
+        session.held = held
+        session.agent = agent
+        session.sink = queue
+        session.streamedText = false
+      }
+
+      const push = (event: CompletionEvent) => {
+        if (hasTools) session.sink?.push(event)
+        else queue.push(event)
+      }
+      const streamed = () => (hasTools ? session.streamedText : streamedText)
+
+      try {
+        const run = await agent.send({
+          text: attached.continued
+            ? followUpPrompt(request.messages)
+            : openingPrompt(request.messages, { hasTools }),
+          images: extractImages(request.messages),
+          customTools,
+          force: true,
+          onDelta: (update) => {
+            if (update.type === "text-delta" && update.text) {
+              streamedText = true
+              if (hasTools) session.streamedText = true
+              push({ type: "text", text: update.text })
+            }
+            if (update.type === "thinking-delta" && update.text) {
+              push({ type: "thinking", text: update.text })
+            }
+          },
+        })
+        if (hasTools) session.run = run
+        const outcome = await this.watchRun(session, held, run, queue, abort, {
+          streamedText: streamed,
+          canRetry: attempt === 0,
+        })
+        keepHeld = hasTools && session.held === held
+        if (outcome === "retry-auth") {
+          refresh = true
+          continue
         }
-    const agent = attached.agent
-
-    const held = this.newHeld()
-    const customTools = toolsToCustomTools(request.tools, (name) =>
-      this.parkTool(held, name),
-    )
-
-    let streamedText = false
-    if (hasTools) {
-      session.held = held
-      session.agent = agent
-      session.sink = queue
-      session.streamedText = false
-    }
-
-    const push = (event: CompletionEvent) => {
-      if (hasTools) session.sink?.push(event)
-      else queue.push(event)
-    }
-
-    try {
-      const run = await agent.send({
-        text: attached.continued
-          ? followUpPrompt(request.messages)
-          : openingPrompt(request.messages, { hasTools }),
-        images: extractImages(request.messages),
-        customTools,
-        force: true,
-        onDelta: (update) => {
-          if (update.type === "text-delta" && update.text) {
-            streamedText = true
-            if (hasTools) session.streamedText = true
-            push({ type: "text", text: update.text })
+        return
+      } catch (error) {
+        if (attempt === 0 && isAuthError(error) && !streamed()) {
+          this.abandonHeld(session, "auth retry")
+          refresh = true
+          continue
+        }
+        throw error
+      } finally {
+        if (!keepHeld) {
+          session.run = undefined
+          if (!hasTools) {
+            await agent.dispose().catch(() => undefined)
           }
-          if (update.type === "thinking-delta" && update.text) {
-            push({ type: "thinking", text: update.text })
-          }
-        },
-      })
-      if (hasTools) session.run = run
-      await this.watchRun(session, held, run, queue, abort, {
-        streamedText: () => (hasTools ? session.streamedText : streamedText),
-      })
-    } finally {
-      const stillHeld = hasTools && session.held === held
-      if (!stillHeld) {
-        session.run = undefined
-        if (!hasTools) {
-          await agent.dispose().catch(() => undefined)
         }
       }
     }
@@ -236,8 +255,14 @@ export class CursorBridge {
   private async attachDurableAgent(
     session: Session,
     model: { id: string; params?: CursorParameterValue[] },
+    refresh = false,
   ): Promise<{ agent: CursorAgent; continued: boolean }> {
-    if (session.agent) return { agent: session.agent, continued: true }
+    if (refresh) {
+      await session.agent?.dispose().catch(() => undefined)
+      session.agent = undefined
+    } else if (session.agent) {
+      return { agent: session.agent, continued: true }
+    }
     const agentId = durableAgentId(session.sessionId, session.modelId, session.cwd)
     const input = {
       apiKey: session.apiKey,
@@ -249,7 +274,7 @@ export class CursorBridge {
     try {
       return { agent: await this.runtime.resumeAgent(agentId, input), continued: true }
     } catch (error) {
-      if (!isMissingAgentError(error)) throw error
+      if (!isMissingAgentError(error) && !isAuthError(error)) throw error
       return { agent: await this.runtime.createAgent(input), continued: false }
     }
   }
@@ -296,8 +321,8 @@ export class CursorBridge {
     run: CursorRun,
     queue: AsyncQueue<CompletionEvent>,
     abort?: AbortSignal,
-    flags: { streamedText: () => boolean } = { streamedText: () => false },
-  ): Promise<void> {
+    flags: { streamedText: () => boolean; canRetry?: boolean } = { streamedText: () => false },
+  ): Promise<"closed" | "retry-auth"> {
     let finished = false
     const cancelThis = (reason: string) => {
       if (session.held === held) this.abandonHeld(session, reason)
@@ -327,18 +352,34 @@ export class CursorBridge {
 
     try {
       const result = await run.wait()
-      if (finished) return
+      if (finished) return "closed"
       finished = true
-      if (session.held === held) {
-        session.held = undefined
-        session.run = undefined
-      }
       clearTimeout(timeout)
       abort?.removeEventListener("abort", onAbort)
 
       if (held.batch.length > 0) {
+        if (session.held === held) {
+          session.held = undefined
+          session.run = undefined
+        }
         held.onBatch(held.batch.splice(0))
-        return
+        return "closed"
+      }
+
+      if (
+        result.status === "error" &&
+        flags.canRetry &&
+        isAuthError(result.error) &&
+        !flags.streamedText()
+      ) {
+        this.abandonHeld(session, "auth retry")
+        session.run = undefined
+        return "retry-auth"
+      }
+
+      if (session.held === held) {
+        session.held = undefined
+        session.run = undefined
       }
 
       if (result.usage) queue.push({ type: "usage", usage: toUsage(result.usage) })
@@ -357,18 +398,25 @@ export class CursorBridge {
         queue.push({ type: "finish", reason: "stop" })
       }
       queue.close()
+      return "closed"
     } catch (error) {
-      if (finished) return
+      if (finished) return "closed"
       finished = true
+      clearTimeout(timeout)
+      abort?.removeEventListener("abort", onAbort)
+      if (flags.canRetry && isAuthError(error) && !flags.streamedText()) {
+        this.abandonHeld(session, "auth retry")
+        session.run = undefined
+        return "retry-auth"
+      }
       if (session.held === held) {
         session.held = undefined
         session.run = undefined
       }
-      clearTimeout(timeout)
-      abort?.removeEventListener("abort", onAbort)
       queue.push({ type: "error", error: errorMessage(error) })
       queue.push({ type: "finish", reason: "error" })
       queue.close()
+      return "closed"
     }
   }
 

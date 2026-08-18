@@ -89,9 +89,29 @@ export function getDefaultRuntime(): CursorRuntime {
   throw new Error("Cursor runtime is not configured")
 }
 
+export function errorMessageOf(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "object" && error && "message" in error) {
+    return String((error as { message: unknown }).message ?? error)
+  }
+  return String(error)
+}
+
 export function isMissingAgentError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /not found/i.test(message)
+  return /not found/i.test(errorMessageOf(error))
+}
+
+export function isAuthError(error: unknown): boolean {
+  const name =
+    error instanceof Error
+      ? error.name
+      : typeof error === "object" && error && "errorName" in error
+        ? String((error as { errorName?: unknown }).errorName ?? "")
+        : ""
+  if (name === "AuthenticationError") return true
+  return /authentication error|unauthenticated|try logging out and back in/i.test(
+    errorMessageOf(error),
+  )
 }
 
 export async function loadSdkRuntime(): Promise<CursorRuntime> {
