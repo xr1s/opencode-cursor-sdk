@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
-import { durableAgentId } from "../src/agent-id.js"
+import { compatToolCallId, durableAgentId } from "../src/agent-id.js"
 import { CursorBridge, resetBridges } from "../src/bridge.js"
 import { eventsToCompletion } from "../src/completions.js"
 import type { ChatCompletionRequest } from "../src/openai-types.js"
@@ -473,5 +473,50 @@ test("premature close on a durable agent is retried after refresh", async () => 
   assert.deepEqual(runtime.resumed, [durableAgentId("s-close", "composer-2.5", process.cwd())])
   await bridge.dispose()
 })
+
+test("Cursor composite toolCallIds are shortened for OpenAI call_id limits", async () => {
+  await resetBridges()
+  const cursorId =
+    "call-4d5a3f1f-96f3-4af1-bdb5-2aa47befe35c-47\nfc_da31117e-06e2-9a80-9414-7321dd117e8c_0"
+  assert.equal(cursorId.length, 86)
+  const compact = compatToolCallId(cursorId)
+  assert.ok(compact.length <= 64)
+  assert.match(compact, /^[A-Za-z0-9_-]+$/)
+  assert.equal(compatToolCallId("call_1"), "call_1")
+
+  const runtime = scriptedRuntime([
+    { type: "tool", name: "bash", args: { command: "ls" }, id: cursorId },
+    { type: "text", text: "listed" },
+  ])
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const first = await bridge.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "list files" }] }),
+    { sessionId: "s-call-id" },
+  )
+  const toolEvent = first.find((event) => event.type === "tool_calls")
+  assert.ok(toolEvent && toolEvent.type === "tool_calls")
+  assert.equal(toolEvent.calls[0].id, compact)
+
+  const second = await bridge.complete(
+    request({
+      tools: bashTools,
+      messages: [
+        { role: "user", content: "list files" },
+        {
+          role: "assistant",
+          tool_calls: [{ id: compact, function: { name: "bash", arguments: "{\"command\":\"ls\"}" } }],
+        },
+        { role: "tool", tool_call_id: compact, content: "README.md" },
+      ],
+    }),
+    { sessionId: "s-call-id" },
+  )
+  assert.deepEqual(
+    second.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["listed"],
+  )
+  await bridge.dispose()
+})
+
 
 

@@ -18,14 +18,21 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 // src/completions.ts
 import { randomUUID as randomUUID2 } from "crypto";
 
-// src/bridge.ts
-import { randomUUID } from "crypto";
-
 // src/agent-id.ts
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
+var MAX_TOOL_CALL_ID_LENGTH = 64;
+var TOOL_CALL_ID_RE = /^[A-Za-z0-9_-]+$/;
 function durableAgentId(sessionId, modelId, cwd) {
   const digest = createHash("sha256").update(`${sessionId}\0${modelId}\0${cwd}`).digest("hex").slice(0, 32);
   return `agent-oc-${digest}`;
+}
+function compatToolCallId(raw) {
+  const candidate = raw?.trim() || `call_${randomUUID()}`;
+  if (candidate.length <= MAX_TOOL_CALL_ID_LENGTH && TOOL_CALL_ID_RE.test(candidate)) {
+    return candidate;
+  }
+  const digest = createHash("sha256").update(candidate).digest("hex").slice(0, 32);
+  return `call_${digest}`;
 }
 
 // src/messages.ts
@@ -383,7 +390,7 @@ var CursorBridge = class {
   }
   parkTool(held, name) {
     return (args, context) => new Promise((resolve, reject) => {
-      const id = context.toolCallId || `call_${randomUUID()}`;
+      const id = compatToolCallId(context.toolCallId);
       const parked = {
         id,
         name,

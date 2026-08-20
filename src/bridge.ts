@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto"
-import { durableAgentId } from "./agent-id.js"
+import { compatToolCallId, durableAgentId } from "./agent-id.js"
 import {
   extractImages,
   followUpPrompt,
@@ -421,7 +420,7 @@ export class CursorBridge {
   private parkTool(held: HeldTurn, name: string): CustomToolExecute {
     return (args, context) =>
       new Promise((resolve, reject) => {
-        const id = context.toolCallId || `call_${randomUUID()}`
+        const id = compatToolCallId(context.toolCallId)
         const parked: ParkedTool = {
           id,
           name,
