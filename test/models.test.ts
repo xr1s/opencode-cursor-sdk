@@ -126,7 +126,10 @@ test("colliding Cursor variant names become effort slugs", () => {
   assert.deepEqual(model.variants, {
     low: { reasoningEffort: "low" },
     medium: { reasoningEffort: "medium" },
-    high: { reasoningEffort: "high" },
+    "low-fast": { reasoningEffort: "low-fast" },
+    "medium-fast": { reasoningEffort: "medium-fast" },
+    fast: { reasoningEffort: "fast" },
+    "high-fast": { reasoningEffort: "high-fast" },
   })
 })
 
@@ -223,5 +226,196 @@ test("resolveModelSelection maps grok effort variants to full params", () => {
       { id: "effort", value: "low" },
       { id: "fast", value: "false" },
     ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "grok-4.6", "fast"), {
+    id: "grok-4.6",
+    params: [
+      { id: "effort", value: "high" },
+      { id: "fast", value: "true" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "grok-4.6", "low-fast"), {
+    id: "grok-4.6",
+    params: [
+      { id: "effort", value: "low" },
+      { id: "fast", value: "true" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "grok-4.6", "high-fast"), {
+    id: "grok-4.6",
+    params: [
+      { id: "effort", value: "high" },
+      { id: "fast", value: "true" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "grok-4.6-medium-fast"), {
+    id: "grok-4.6",
+    params: [
+      { id: "effort", value: "medium" },
+      { id: "fast", value: "true" },
+    ],
+  })
+})
+
+const luna: CursorModelListItem = {
+  id: "gpt-5.6-luna",
+  displayName: "GPT-5.6 Luna",
+  parameters: [
+    {
+      id: "context",
+      displayName: "Context",
+      values: [
+        { value: "272k", displayName: "272K" },
+        { value: "1m", displayName: "1M" },
+      ],
+    },
+    {
+      id: "reasoning",
+      displayName: "Reasoning",
+      values: [
+        { value: "medium", displayName: "Medium" },
+        { value: "high", displayName: "High" },
+        { value: "max", displayName: "Max" },
+      ],
+    },
+    {
+      id: "fast",
+      displayName: "Fast",
+      values: [{ value: "false" }, { value: "true", displayName: "Fast" }],
+    },
+  ],
+  variants: [
+    {
+      displayName: "GPT-5.6 Luna",
+      params: [
+        { id: "context", value: "272k" },
+        { id: "reasoning", value: "medium" },
+        { id: "fast", value: "false" },
+      ],
+    },
+    {
+      displayName: "GPT-5.6 Luna",
+      params: [
+        { id: "context", value: "272k" },
+        { id: "reasoning", value: "high" },
+        { id: "fast", value: "false" },
+      ],
+    },
+    {
+      displayName: "GPT-5.6 Luna",
+      isDefault: true,
+      params: [
+        { id: "context", value: "1m" },
+        { id: "reasoning", value: "medium" },
+        { id: "fast", value: "false" },
+      ],
+    },
+    {
+      displayName: "GPT-5.6 Luna",
+      params: [
+        { id: "context", value: "1m" },
+        { id: "reasoning", value: "high" },
+        { id: "fast", value: "false" },
+      ],
+    },
+    {
+      displayName: "GPT-5.6 Luna",
+      params: [
+        { id: "context", value: "1m" },
+        { id: "reasoning", value: "max" },
+        { id: "fast", value: "false" },
+      ],
+    },
+  ],
+}
+
+test("fast clones catalog variants; default plus fast is named fast", () => {
+  const model = toConfigModel(luna)
+  assert.deepEqual(model.variants, {
+    "272k": { reasoningEffort: "272k" },
+    "272k-high": { reasoningEffort: "272k-high" },
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+    "272k-fast": { reasoningEffort: "272k-fast" },
+    "272k-high-fast": { reasoningEffort: "272k-high-fast" },
+    "high-fast": { reasoningEffort: "high-fast" },
+    "max-fast": { reasoningEffort: "max-fast" },
+    fast: { reasoningEffort: "fast" },
+  })
+})
+
+test("resolveModelSelection maps luna fast and max-mode", () => {
+  const catalog = [luna]
+  assert.deepEqual(resolveModelSelection(catalog, "gpt-5.6-luna", "fast"), {
+    id: "gpt-5.6-luna",
+    params: [
+      { id: "context", value: "1m" },
+      { id: "reasoning", value: "medium" },
+      { id: "fast", value: "true" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "gpt-5.6-luna", "high-fast"), {
+    id: "gpt-5.6-luna",
+    params: [
+      { id: "context", value: "1m" },
+      { id: "reasoning", value: "high" },
+      { id: "fast", value: "true" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "gpt-5.6-luna", "max"), {
+    id: "gpt-5.6-luna",
+    params: [
+      { id: "context", value: "1m" },
+      { id: "reasoning", value: "max" },
+      { id: "fast", value: "false" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection(catalog, "gpt-5.6-luna", "max-mode"), {
+    id: "gpt-5.6-luna",
+    params: [
+      { id: "context", value: "1m" },
+      { id: "reasoning", value: "medium" },
+      { id: "fast", value: "false" },
+    ],
+  })
+})
+
+test("max-mode variant is synthesized when catalog default is the smaller window", () => {
+  const model: CursorModelListItem = {
+    id: "claude-opus-4-8",
+    displayName: "Claude Opus 4.8",
+    parameters: [
+      {
+        id: "context",
+        displayName: "Context",
+        values: [
+          { value: "200k", displayName: "200K" },
+          { value: "1m", displayName: "1M" },
+        ],
+      },
+    ],
+    variants: [
+      {
+        displayName: "Claude Opus 4.8",
+        isDefault: true,
+        params: [{ id: "context", value: "200k" }],
+      },
+    ],
+  }
+  assert.deepEqual(toConfigModel(model).variants, {
+    "200k": { reasoningEffort: "200k" },
+    "1m": { reasoningEffort: "1m" },
+  })
+  assert.deepEqual(resolveModelSelection([model], "claude-opus-4-8", "max"), {
+    id: "claude-opus-4-8",
+    params: [{ id: "context", value: "1m" }],
+  })
+  assert.deepEqual(resolveModelSelection([model], "claude-opus-4-8", "max-mode"), {
+    id: "claude-opus-4-8",
+    params: [{ id: "context", value: "1m" }],
+  })
+  assert.deepEqual(resolveModelSelection([model], "claude-opus-4-8", "1m"), {
+    id: "claude-opus-4-8",
+    params: [{ id: "context", value: "1m" }],
   })
 })

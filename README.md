@@ -147,8 +147,10 @@ account** show up in OpenCode's `/models` picker. It calls
 - After `/connect`, the live catalog replaces that list. Hand-written
   `models` entries still win on id collision.
 - Cursor variants (for example Composer Fast) become OpenCode `/variants`
-   entries. Select one with `opencode run --variant fast ...` or the TUI
-   variant picker.
+  entries. Fast mode (`fast=true`) and Max Mode (the largest `context`, for
+  example `1m`) are also expanded into variants such as `fast`, `high-fast`,
+  `max`, and `1m`. Select one with `opencode run --variant fast ...` or the TUI
+  variant picker. `--variant max` is reasoning max; `--variant max-mode` maps to the largest context window.
 
 Without the plugin, OpenCode still loads the provider from `npm`, but you
 must list models yourself under `provider.cursor.models` and authenticate

@@ -135,8 +135,7 @@ pnpm run build:tsup
 - 还没 `/connect`（也没设 `CURSOR_API_KEY`）时，使用一小份兜底列表：
   `composer-2.5` 和 `auto`。
 - `/connect` 之后，实时目录会替换这份列表。你手写的 `models` 条目在 id 冲突时仍然优先。
-- Cursor 的变体（例如 Composer Fast）会变成 OpenCode 的 `/variants`。用
-  `opencode run --variant fast ...` 或 TUI 的变体选择器切换。
+- Cursor 的变体（例如 Composer Fast）会变成 OpenCode 的 `/variants`。碰撞的 Cursor 变体会按相对默认值命名，例如 `max`、`high-fast`、`fast`、`1m`。用 `opencode run --variant fast ...` 或 TUI 的变体选择器切换。`--variant max` 是 reasoning max；`--variant max-mode` 对应最大上下文窗口。
 
 不配 plugin 时，OpenCode 仍会从 `npm` 加载 provider，但你必须自己在
 `provider.cursor.models` 里列出模型，并用 `/connect` → Other、provider id 填

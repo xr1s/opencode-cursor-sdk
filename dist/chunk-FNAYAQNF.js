@@ -173,63 +173,191 @@ function inferReasoning(model) {
 function paramDef(model, id) {
   return model.parameters?.find((item) => item.id === id);
 }
-function paramVariantLabel(variant, model) {
-  const parts = [];
-  for (const param of variant.params ?? []) {
-    const def = paramDef(model, param.id);
-    const value = def?.values.find((item) => item.value === param.value);
-    if (value?.displayName) {
-      parts.push(value.displayName);
-      continue;
-    }
-    if (param.value === "true") {
-      parts.push(def?.displayName || param.id);
-      continue;
-    }
-    if (param.value === "false") continue;
-    parts.push(param.value);
-  }
-  if (parts.length === 0) {
-    const off = (variant.params ?? []).find((param) => param.value === "false");
-    if (off) {
-      const def = paramDef(model, off.id);
-      return `${def?.displayName || off.id} off`;
-    }
-    return variant.displayName;
-  }
-  return parts.join(" ");
-}
 function displayNamesCollide(model) {
   const names = (model.variants ?? []).map((item) => item.displayName);
   return names.length > 1 && new Set(names).size < names.length;
 }
+function defaultParams(model) {
+  return model.variants?.find((item) => item.isDefault)?.params ?? [];
+}
+function deltaParts(params, model, defaults) {
+  const defaultMap = new Map(defaults.map((item) => [item.id, item.value]));
+  const parts = [];
+  for (const param of params ?? []) {
+    if (defaultMap.get(param.id) === param.value) continue;
+    if (param.value === "true") {
+      const def = paramDef(model, param.id);
+      parts.push(slug(def?.displayName || param.id));
+      continue;
+    }
+    if (param.value === "false") {
+      const def = paramDef(model, param.id);
+      parts.push(`${slug(def?.displayName || param.id)}-off`);
+      continue;
+    }
+    parts.push(slug(param.value));
+  }
+  return parts;
+}
 function labeledVariants(model) {
   const collide = displayNamesCollide(model);
+  const defaults = defaultParams(model);
   const used = /* @__PURE__ */ new Set();
   const out = [];
   for (const variant of model.variants ?? []) {
     if (!collide && variant.isDefault) continue;
-    const label = collide ? paramVariantLabel(variant, model) : variant.displayName;
-    if (!collide && slug(label) === "default") continue;
+    const label = collide ? deltaParts(variant.params, model, defaults).join("-") : variant.displayName;
+    if (!label || !collide && slug(label) === "default") continue;
     out.push({ id: uniqueSlug(label, used), variant });
+  }
+  return out;
+}
+function paramsKey(params) {
+  return [...params ?? []].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((item) => `${item.id}=${item.value}`).join("&");
+}
+function setParam(params, id, value) {
+  const next = [...params ?? []];
+  const index = next.findIndex((item) => item.id === id);
+  if (index >= 0) {
+    next[index] = { id, value };
+    return next;
+  }
+  next.push({ id, value });
+  return next;
+}
+function getParam(params, id) {
+  return params?.find((item) => item.id === id)?.value;
+}
+function namedParam(model, id, pattern) {
+  return paramDef(model, id) ?? model.parameters?.find(
+    (item) => pattern.test(item.id) || pattern.test(item.displayName ?? "")
+  );
+}
+function fastOnValue(model) {
+  const param = namedParam(model, "fast", /fast/i);
+  const value = param?.values.find((item) => item.value === "true") ?? param?.values.find((item) => slug(item.displayName ?? "") === "fast");
+  if (!param || !value) return void 0;
+  return { id: param.id, value: value.value };
+}
+function maxContextValue(model) {
+  const param = namedParam(model, "context", /context/i);
+  if (!param?.values.length) return void 0;
+  let best;
+  for (const item of param.values) {
+    const tokens = parseContextValue(item.value);
+    if (!best || tokens > best.tokens) best = { value: item.value, tokens };
+  }
+  if (!best || best.tokens <= 0) return void 0;
+  const smaller = param.values.some((item) => {
+    const tokens = parseContextValue(item.value);
+    return tokens > 0 && tokens < best.tokens;
+  });
+  if (!smaller) return void 0;
+  return { id: param.id, value: best.value };
+}
+function highEffortValue(model) {
+  const param = namedParam(model, "effort", /effort|reason|think/i);
+  const value = param?.values.find(
+    (item) => slug(item.value) === "high" || slug(item.displayName ?? "") === "high"
+  );
+  if (!param || !value) return void 0;
+  return { id: param.id, value: value.value };
+}
+function seedVariants(model) {
+  const labeled = labeledVariants(model);
+  if (labeled.length > 0) return labeled;
+  const parameters = model.parameters ?? [];
+  if (parameters.length === 0) return [];
+  const param = parameters.find((item) => /effort|reason|think/i.test(item.id)) ?? parameters[0];
+  const used = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const value of param.values) {
+    if (value === param.values[0] && !value.displayName) continue;
+    const label = value.displayName || value.value;
+    out.push({
+      id: uniqueSlug(label, used),
+      variant: {
+        displayName: label,
+        params: [{ id: param.id, value: value.value }]
+      }
+    });
+  }
+  return out;
+}
+function opencodeVariants(model) {
+  const seeds = seedVariants(model);
+  const used = new Set(seeds.map((item) => item.id));
+  const seen = new Set(seeds.map((item) => paramsKey(item.variant.params)));
+  const out = [...seeds];
+  const defaults = model.variants?.find((item) => item.isDefault);
+  const bases = seeds.map(
+    (item) => ({
+      prefix: item.id,
+      params: item.variant.params
+    })
+  );
+  if (defaults && !seen.has(paramsKey(defaults.params))) {
+    bases.push({ params: defaults.params });
+    seen.add(paramsKey(defaults.params));
+  }
+  const add = (hint, params, alias = false) => {
+    const key = paramsKey(params);
+    if (!alias && seen.has(key)) return;
+    if (alias) {
+      const id = slug(hint);
+      if (used.has(id)) return;
+      used.add(id);
+      out.push({ id, variant: { params, displayName: hint } });
+      return;
+    }
+    seen.add(key);
+    out.push({
+      id: uniqueSlug(hint, used),
+      variant: { params, displayName: hint }
+    });
+  };
+  const fromDefault = (params) => Boolean(defaults && paramsKey(params) === paramsKey(defaults.params));
+  const nameOf = (prefix, extra, source) => fromDefault(source) || !prefix ? extra.join("-") : [prefix, ...extra].join("-");
+  const fast = fastOnValue(model);
+  const maxCtx = maxContextValue(model);
+  if (fast) {
+    for (const base of bases) {
+      if (getParam(base.params, fast.id) === fast.value) continue;
+      add(nameOf(base.prefix, ["fast"], base.params), setParam(base.params, fast.id, fast.value));
+    }
+  }
+  if (maxCtx) {
+    const ctxSlug = slug(maxCtx.value);
+    for (const base of bases) {
+      if (getParam(base.params, maxCtx.id) === maxCtx.value) continue;
+      add(
+        nameOf(base.prefix, [ctxSlug], base.params),
+        setParam(base.params, maxCtx.id, maxCtx.value)
+      );
+    }
+  }
+  if (fast && maxCtx) {
+    const ctxSlug = slug(maxCtx.value);
+    for (const base of bases) {
+      if (getParam(base.params, fast.id) === fast.value) continue;
+      if (getParam(base.params, maxCtx.id) === maxCtx.value) continue;
+      add(
+        nameOf(base.prefix, [ctxSlug, "fast"], base.params),
+        setParam(setParam(base.params, maxCtx.id, maxCtx.value), fast.id, fast.value)
+      );
+    }
+  }
+  const high = highEffortValue(model);
+  const baseParams = defaults?.params ?? [];
+  if (high && fast) {
+    add("high-fast", setParam(setParam(baseParams, high.id, high.value), fast.id, fast.value), true);
   }
   return out;
 }
 function variantMap(model) {
   const variants = {};
-  const used = /* @__PURE__ */ new Set();
-  for (const { id } of labeledVariants(model)) {
-    used.add(id);
+  for (const { id } of opencodeVariants(model)) {
     variants[id] = { reasoningEffort: id };
-  }
-  if (Object.keys(variants).length === 0 && (model.parameters?.length ?? 0) > 0) {
-    const param = model.parameters.find((item) => /effort|reason|think/i.test(item.id)) ?? model.parameters[0];
-    for (const value of param.values) {
-      const label = value.displayName || value.value;
-      if (value === param.values[0] && !value.displayName) continue;
-      const id = uniqueSlug(label, used);
-      variants[id] = { reasoningEffort: id };
-    }
   }
   return Object.keys(variants).length > 0 ? variants : void 0;
 }
@@ -288,7 +416,10 @@ function resolveModelSelection(catalog, modelId, reasoningEffort) {
     const fromVariant = variantParams(found, reasoningEffort);
     if (fromVariant) return { id: found.id, params: fromVariant };
     const fromParam = paramValue(found, reasoningEffort);
-    if (fromParam) return { id: found.id, params: [fromParam] };
+    if (fromParam) {
+      const base = found.variants?.find((variant) => variant.isDefault)?.params ?? [];
+      return { id: found.id, params: setParam(base, fromParam.id, fromParam.value) };
+    }
   } else {
     const defaults = found.variants?.find((variant) => variant.isDefault);
     if (defaults?.params?.length) return { id: found.id, params: defaults.params };
@@ -297,8 +428,15 @@ function resolveModelSelection(catalog, modelId, reasoningEffort) {
 }
 function variantParams(model, effort) {
   const wanted = slug(effort);
-  const labeled = labeledVariants(model).find((item) => item.id === wanted);
+  const labeled = opencodeVariants(model).find((item) => item.id === wanted);
   if (labeled) return labeled.variant.params;
+  if (wanted === "max" || wanted === "max-mode") {
+    const maxCtx = maxContextValue(model);
+    if (maxCtx) {
+      const base = model.variants?.find((item) => item.isDefault)?.params ?? [];
+      return setParam(base, maxCtx.id, maxCtx.value);
+    }
+  }
   const variant = (model.variants ?? []).find((item) => slug(item.displayName) === wanted);
   return variant?.params;
 }

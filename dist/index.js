@@ -10,7 +10,7 @@ import {
   setDefaultRuntime,
   toConfigModels,
   toolsToCustomTools
-} from "./chunk-WN4Z5KBS.js";
+} from "./chunk-FNAYAQNF.js";
 
 // src/index.ts
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
