@@ -453,4 +453,25 @@ test("auth errors on throwaway turns retry with a new agent", async () => {
   await bridge.dispose()
 })
 
+test("premature close on a durable agent is retried after refresh", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "throw", error: "Premature close" },
+    { type: "text", text: "recovered" },
+  ])
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const events = await bridge.complete(
+    request({ tools: bashTools, messages: [{ role: "user", content: "hello" }] }),
+    { sessionId: "s-close" },
+  )
+  assert.deepEqual(
+    events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text),
+    ["recovered"],
+  )
+  assert.equal(events.find((event) => event.type === "error"), undefined)
+  assert.equal(runtime.created.length, 1)
+  assert.deepEqual(runtime.resumed, [durableAgentId("s-close", "composer-2.5", process.cwd())])
+  await bridge.dispose()
+})
+
 

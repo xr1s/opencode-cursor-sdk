@@ -16,6 +16,7 @@ import {
   getDefaultRuntime,
   isAuthError,
   isMissingAgentError,
+  isRetryableAgentError,
   toolsToCustomTools,
   type CursorAgent,
   type CursorRun,
@@ -25,7 +26,6 @@ import {
 
 const TOOL_BATCH_MS = 40
 const HELD_TIMEOUT_MS = 15 * 60 * 1000
-const SESSION_TTL_MS = 30 * 60 * 1000
 
 type ParkedTool = {
   id: string
@@ -54,7 +54,6 @@ type Session = {
   run?: CursorRun
   sink?: AsyncQueue<CompletionEvent>
   streamedText: boolean
-  lastUsed: number
 }
 
 export type BridgeOptions = {
@@ -90,7 +89,6 @@ export class CursorBridge {
     request: ChatCompletionRequest,
     opts: { sessionId: string; abortSignal?: AbortSignal },
   ): AsyncGenerator<CompletionEvent> {
-    this.evictExpired()
     const session = this.session(opts.sessionId, request.model)
     const queue = new AsyncQueue<CompletionEvent>()
     const abort = opts.abortSignal
@@ -122,10 +120,7 @@ export class CursorBridge {
   private session(sessionId: string, modelId: string): Session {
     const key = `${sessionId}::${modelId}`
     const existing = this.sessions.get(key)
-    if (existing) {
-      existing.lastUsed = Date.now()
-      return existing
-    }
+    if (existing) return existing
     const session: Session = {
       key,
       sessionId,
@@ -134,7 +129,6 @@ export class CursorBridge {
       modelId,
       catalog: [],
       streamedText: false,
-      lastUsed: Date.now(),
     }
     this.sessions.set(key, session)
     return session
@@ -229,14 +223,14 @@ export class CursorBridge {
           canRetry: attempt === 0,
         })
         keepHeld = hasTools && session.held === held
-        if (outcome === "retry-auth") {
+        if (outcome === "retry") {
           refresh = true
           continue
         }
         return
       } catch (error) {
-        if (attempt === 0 && isAuthError(error) && !streamed()) {
-          this.abandonHeld(session, "auth retry")
+        if (attempt === 0 && isRetryableAgentError(error) && !streamed()) {
+          this.abandonHeld(session, "retry")
           refresh = true
           continue
         }
@@ -322,7 +316,7 @@ export class CursorBridge {
     queue: AsyncQueue<CompletionEvent>,
     abort?: AbortSignal,
     flags: { streamedText: () => boolean; canRetry?: boolean } = { streamedText: () => false },
-  ): Promise<"closed" | "retry-auth"> {
+  ): Promise<"closed" | "retry"> {
     let finished = false
     const cancelThis = (reason: string) => {
       if (session.held === held) this.abandonHeld(session, reason)
@@ -369,12 +363,12 @@ export class CursorBridge {
       if (
         result.status === "error" &&
         flags.canRetry &&
-        isAuthError(result.error) &&
+        isRetryableAgentError(result.error) &&
         !flags.streamedText()
       ) {
-        this.abandonHeld(session, "auth retry")
+        this.abandonHeld(session, "retry")
         session.run = undefined
-        return "retry-auth"
+        return "retry"
       }
 
       if (session.held === held) {
@@ -404,10 +398,10 @@ export class CursorBridge {
       finished = true
       clearTimeout(timeout)
       abort?.removeEventListener("abort", onAbort)
-      if (flags.canRetry && isAuthError(error) && !flags.streamedText()) {
-        this.abandonHeld(session, "auth retry")
+      if (flags.canRetry && isRetryableAgentError(error) && !flags.streamedText()) {
+        this.abandonHeld(session, "retry")
         session.run = undefined
-        return "retry-auth"
+        return "retry"
       }
       if (session.held === held) {
         session.held = undefined
@@ -466,16 +460,6 @@ export class CursorBridge {
       return this.catalog
     } catch {
       return this.catalog ?? []
-    }
-  }
-
-  private evictExpired(): void {
-    const now = Date.now()
-    for (const session of this.sessions.values()) {
-      if (now - session.lastUsed > SESSION_TTL_MS && !session.held) {
-        void this.drop(session)
-        this.sessions.delete(session.key)
-      }
     }
   }
 

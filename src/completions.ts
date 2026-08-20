@@ -99,10 +99,16 @@ function encodeSse(
   meta: { id: string; created: number; model: string; includeUsage: boolean },
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
+  let cancelled = false
   return new ReadableStream({
     async start(controller) {
       const send = (data: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+        if (cancelled) return
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+        } catch {
+          cancelled = true
+        }
       }
       send({
         id: meta.id,
@@ -118,6 +124,7 @@ function encodeSse(
 
       try {
         for await (const event of events) {
+          if (cancelled) break
           if (event.type === "text") {
             send(chunk(meta, { content: event.text }))
           } else if (event.type === "thinking") {
@@ -159,21 +166,27 @@ function encodeSse(
           }
         }
 
-        send({
-          id: meta.id,
-          object: "chat.completion.chunk",
-          created: meta.created,
-          model: meta.model,
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: finish === "error" ? "stop" : finish,
-            },
-          ],
-          ...(meta.includeUsage && usage ? { usage } : {}),
-        })
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+        if (!cancelled) {
+          send({
+            id: meta.id,
+            object: "chat.completion.chunk",
+            created: meta.created,
+            model: meta.model,
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: finish === "error" ? "stop" : finish,
+              },
+            ],
+            ...(meta.includeUsage && usage ? { usage } : {}),
+          })
+          try {
+            if (!cancelled) controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+          } catch {
+            cancelled = true
+          }
+        }
       } catch (error) {
         send({
           error: {
@@ -182,8 +195,15 @@ function encodeSse(
           },
         })
       } finally {
-        controller.close()
+        try {
+          if (!cancelled) controller.close()
+        } catch {
+          cancelled = true
+        }
       }
+    },
+    cancel() {
+      cancelled = true
     },
   })
 }

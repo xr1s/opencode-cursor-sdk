@@ -38,6 +38,15 @@ function isAuthError(error) {
     errorMessageOf(error)
   );
 }
+function isTransientNetworkError(error) {
+  const code = typeof error === "object" && error && "code" in error ? String(error.code ?? "") : "";
+  return /premature close|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|ERR_STREAM|NGHTTP2|http\/2 stream|ERR_HTTP2|connection aborted|protocol error|session closed with error/i.test(
+    `${code} ${errorMessageOf(error)}`
+  );
+}
+function isRetryableAgentError(error) {
+  return isAuthError(error) || isTransientNetworkError(error);
+}
 async function loadSdkRuntime() {
   const { Agent, Cursor } = await import("@cursor/sdk");
   return {
@@ -327,6 +336,7 @@ export {
   getDefaultRuntime,
   isMissingAgentError,
   isAuthError,
+  isRetryableAgentError,
   loadSdkRuntime,
   CURSOR_LOCAL_BASE_URL,
   PACKAGE_MARKER

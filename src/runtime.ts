@@ -114,6 +114,20 @@ export function isAuthError(error: unknown): boolean {
   )
 }
 
+export function isTransientNetworkError(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : ""
+  return /premature close|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|ERR_STREAM|NGHTTP2|http\/2 stream|ERR_HTTP2|connection aborted|protocol error|session closed with error/i.test(
+    `${code} ${errorMessageOf(error)}`,
+  )
+}
+
+export function isRetryableAgentError(error: unknown): boolean {
+  return isAuthError(error) || isTransientNetworkError(error)
+}
+
 export async function loadSdkRuntime(): Promise<CursorRuntime> {
   const { Agent, Cursor } = await import("@cursor/sdk")
   return {

@@ -4,12 +4,13 @@ import {
   getDefaultRuntime,
   isAuthError,
   isMissingAgentError,
+  isRetryableAgentError,
   loadSdkRuntime,
   resolveModelSelection,
   setDefaultRuntime,
   toConfigModels,
   toolsToCustomTools
-} from "./chunk-VU7MVYH4.js";
+} from "./chunk-WN4Z5KBS.js";
 
 // src/index.ts
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -96,7 +97,6 @@ function followUpPrompt(messages) {
 // src/bridge.ts
 var TOOL_BATCH_MS = 40;
 var HELD_TIMEOUT_MS = 15 * 60 * 1e3;
-var SESSION_TTL_MS = 30 * 60 * 1e3;
 var CursorBridge = class {
   sessions = /* @__PURE__ */ new Map();
   apiKey;
@@ -115,7 +115,6 @@ var CursorBridge = class {
     return events;
   }
   async *stream(request, opts) {
-    this.evictExpired();
     const session = this.session(opts.sessionId, request.model);
     const queue = new AsyncQueue();
     const abort = opts.abortSignal;
@@ -142,10 +141,7 @@ var CursorBridge = class {
   session(sessionId, modelId) {
     const key = `${sessionId}::${modelId}`;
     const existing = this.sessions.get(key);
-    if (existing) {
-      existing.lastUsed = Date.now();
-      return existing;
-    }
+    if (existing) return existing;
     const session = {
       key,
       sessionId,
@@ -153,8 +149,7 @@ var CursorBridge = class {
       cwd: this.cwd,
       modelId,
       catalog: [],
-      streamedText: false,
-      lastUsed: Date.now()
+      streamedText: false
     };
     this.sessions.set(key, session);
     return session;
@@ -228,14 +223,14 @@ var CursorBridge = class {
           canRetry: attempt === 0
         });
         keepHeld = hasTools && session.held === held;
-        if (outcome === "retry-auth") {
+        if (outcome === "retry") {
           refresh = true;
           continue;
         }
         return;
       } catch (error) {
-        if (attempt === 0 && isAuthError(error) && !streamed()) {
-          this.abandonHeld(session, "auth retry");
+        if (attempt === 0 && isRetryableAgentError(error) && !streamed()) {
+          this.abandonHeld(session, "retry");
           refresh = true;
           continue;
         }
@@ -337,10 +332,10 @@ var CursorBridge = class {
         held.onBatch(held.batch.splice(0));
         return "closed";
       }
-      if (result.status === "error" && flags.canRetry && isAuthError(result.error) && !flags.streamedText()) {
-        this.abandonHeld(session, "auth retry");
+      if (result.status === "error" && flags.canRetry && isRetryableAgentError(result.error) && !flags.streamedText()) {
+        this.abandonHeld(session, "retry");
         session.run = void 0;
-        return "retry-auth";
+        return "retry";
       }
       if (session.held === held) {
         session.held = void 0;
@@ -368,10 +363,10 @@ var CursorBridge = class {
       finished = true;
       clearTimeout(timeout);
       abort?.removeEventListener("abort", onAbort);
-      if (flags.canRetry && isAuthError(error) && !flags.streamedText()) {
-        this.abandonHeld(session, "auth retry");
+      if (flags.canRetry && isRetryableAgentError(error) && !flags.streamedText()) {
+        this.abandonHeld(session, "retry");
         session.run = void 0;
-        return "retry-auth";
+        return "retry";
       }
       if (session.held === held) {
         session.held = void 0;
@@ -425,15 +420,6 @@ var CursorBridge = class {
       return this.catalog;
     } catch {
       return this.catalog ?? [];
-    }
-  }
-  evictExpired() {
-    const now = Date.now();
-    for (const session of this.sessions.values()) {
-      if (now - session.lastUsed > SESSION_TTL_MS && !session.held) {
-        void this.drop(session);
-        this.sessions.delete(session.key);
-      }
     }
   }
   async drop(session) {
@@ -577,12 +563,18 @@ function eventsToCompletion(events, meta) {
 }
 function encodeSse(events, meta) {
   const encoder = new TextEncoder();
+  let cancelled = false;
   return new ReadableStream({
     async start(controller) {
       const send = (data) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}
+        if (cancelled) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}
 
 `));
+        } catch {
+          cancelled = true;
+        }
       };
       send({
         id: meta.id,
@@ -596,6 +588,7 @@ function encodeSse(events, meta) {
       let toolIndex = 0;
       try {
         for await (const event of events) {
+          if (cancelled) break;
           if (event.type === "text") {
             send(chunk(meta, { content: event.text }));
           } else if (event.type === "thinking") {
@@ -636,21 +629,27 @@ function encodeSse(events, meta) {
             finish = event.reason;
           }
         }
-        send({
-          id: meta.id,
-          object: "chat.completion.chunk",
-          created: meta.created,
-          model: meta.model,
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: finish === "error" ? "stop" : finish
-            }
-          ],
-          ...meta.includeUsage && usage ? { usage } : {}
-        });
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        if (!cancelled) {
+          send({
+            id: meta.id,
+            object: "chat.completion.chunk",
+            created: meta.created,
+            model: meta.model,
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: finish === "error" ? "stop" : finish
+              }
+            ],
+            ...meta.includeUsage && usage ? { usage } : {}
+          });
+          try {
+            if (!cancelled) controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          } catch {
+            cancelled = true;
+          }
+        }
       } catch (error) {
         send({
           error: {
@@ -659,8 +658,15 @@ function encodeSse(events, meta) {
           }
         });
       } finally {
-        controller.close();
+        try {
+          if (!cancelled) controller.close();
+        } catch {
+          cancelled = true;
+        }
       }
+    },
+    cancel() {
+      cancelled = true;
     }
   });
 }
