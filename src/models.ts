@@ -157,6 +157,10 @@ function deltaParts(
   const defaultMap = new Map(defaults.map((item) => [item.id, item.value]))
   const parts: string[] = []
   for (const param of params ?? []) {
+    if (isFastParam(model, param.id)) {
+      if (param.value === "true") parts.push("fast")
+      continue
+    }
     if (defaultMap.get(param.id) === param.value) continue
     if (param.value === "true") {
       const def = paramDef(model, param.id)
@@ -217,6 +221,11 @@ function getParam(params: CursorParameterValue[] | undefined, id: string): strin
   return params?.find((item) => item.id === id)?.value
 }
 
+function isFastParam(model: CursorModelListItem, id: string): boolean {
+  if (/fast/i.test(id)) return true
+  return /fast/i.test(paramDef(model, id)?.displayName ?? "")
+}
+
 function namedParam(model: CursorModelListItem, id: string, pattern: RegExp) {
   return (
     paramDef(model, id) ??
@@ -233,6 +242,16 @@ function fastOnValue(model: CursorModelListItem): CursorParameterValue | undefin
     param?.values.find((item) => slug(item.displayName ?? "") === "fast")
   if (!param || !value) return undefined
   return { id: param.id, value: value.value }
+}
+
+function withFastOff(
+  model: CursorModelListItem,
+  params: CursorParameterValue[],
+): CursorParameterValue[] {
+  const param = namedParam(model, "fast", /fast/i)
+  const value = param?.values.find((item) => item.value === "false")
+  if (!param || !value) return params
+  return setParam(params, param.id, value.value)
 }
 
 function maxContextValue(model: CursorModelListItem): CursorParameterValue | undefined {
@@ -452,7 +471,7 @@ export function resolveModelSelection(
     }
   } else {
     const defaults = found.variants?.find((variant) => variant.isDefault)
-    if (defaults?.params?.length) return { id: found.id, params: defaults.params }
+    if (defaults?.params?.length) return { id: found.id, params: withFastOff(found, defaults.params) }
   }
 
   return { id: found.id }

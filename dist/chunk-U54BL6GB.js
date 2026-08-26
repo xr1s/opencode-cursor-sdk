@@ -190,6 +190,10 @@ function deltaParts(params, model, defaults) {
   const defaultMap = new Map(defaults.map((item) => [item.id, item.value]));
   const parts = [];
   for (const param of params ?? []) {
+    if (isFastParam(model, param.id)) {
+      if (param.value === "true") parts.push("fast");
+      continue;
+    }
     if (defaultMap.get(param.id) === param.value) continue;
     if (param.value === "true") {
       const def = paramDef(model, param.id);
@@ -234,6 +238,10 @@ function setParam(params, id, value) {
 function getParam(params, id) {
   return params?.find((item) => item.id === id)?.value;
 }
+function isFastParam(model, id) {
+  if (/fast/i.test(id)) return true;
+  return /fast/i.test(paramDef(model, id)?.displayName ?? "");
+}
 function namedParam(model, id, pattern) {
   return paramDef(model, id) ?? model.parameters?.find(
     (item) => pattern.test(item.id) || pattern.test(item.displayName ?? "")
@@ -244,6 +252,12 @@ function fastOnValue(model) {
   const value = param?.values.find((item) => item.value === "true") ?? param?.values.find((item) => slug(item.displayName ?? "") === "fast");
   if (!param || !value) return void 0;
   return { id: param.id, value: value.value };
+}
+function withFastOff(model, params) {
+  const param = namedParam(model, "fast", /fast/i);
+  const value = param?.values.find((item) => item.value === "false");
+  if (!param || !value) return params;
+  return setParam(params, param.id, value.value);
 }
 function maxContextValue(model) {
   const param = namedParam(model, "context", /context/i);
@@ -428,7 +442,7 @@ function resolveModelSelection(catalog, modelId, reasoningEffort) {
     }
   } else {
     const defaults = found.variants?.find((variant) => variant.isDefault);
-    if (defaults?.params?.length) return { id: found.id, params: defaults.params };
+    if (defaults?.params?.length) return { id: found.id, params: withFastOff(found, defaults.params) };
   }
   return { id: found.id };
 }

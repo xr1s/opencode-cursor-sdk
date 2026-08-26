@@ -133,6 +133,57 @@ test("colliding Cursor variant names become effort slugs", () => {
   })
 })
 
+test("fast-on is a -fast suffix; catalog default fast does not become fast-off", () => {
+  const model: CursorModelListItem = {
+    id: "grok-fast-default",
+    displayName: "Grok Fast Default",
+    parameters: grok.parameters,
+    variants: [
+      {
+        displayName: "Grok Fast Default",
+        isDefault: true,
+        params: [
+          { id: "effort", value: "high" },
+          { id: "fast", value: "true" },
+        ],
+      },
+      {
+        displayName: "Grok Fast Default",
+        params: [
+          { id: "effort", value: "high" },
+          { id: "fast", value: "false" },
+        ],
+      },
+      {
+        displayName: "Grok Fast Default",
+        params: [
+          { id: "effort", value: "low" },
+          { id: "fast", value: "false" },
+        ],
+      },
+    ],
+  }
+  const variants = toConfigModel(model).variants ?? {}
+  assert.equal(variants["fast-off"], undefined)
+  assert.deepEqual(variants.fast, { reasoningEffort: "fast" })
+  assert.deepEqual(variants.low, { reasoningEffort: "low" })
+  assert.deepEqual(variants["low-fast"], { reasoningEffort: "low-fast" })
+  assert.deepEqual(resolveModelSelection([model], "grok-fast-default"), {
+    id: "grok-fast-default",
+    params: [
+      { id: "effort", value: "high" },
+      { id: "fast", value: "false" },
+    ],
+  })
+  assert.deepEqual(resolveModelSelection([model], "grok-fast-default", "fast"), {
+    id: "grok-fast-default",
+    params: [
+      { id: "effort", value: "high" },
+      { id: "fast", value: "true" },
+    ],
+  })
+})
+
 test("unique variant displayName matching the model is not a collision", () => {
   const model = toConfigModel({
     id: "gpt-5-mini",
