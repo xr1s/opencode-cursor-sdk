@@ -63,14 +63,19 @@ export type CursorRuntime = {
 export function toolsToCustomTools(
   tools: ChatToolDefinition[] | undefined,
   execute: (name: string) => CustomToolExecute,
+  skillCatalog = "",
 ): Record<string, CustomTool> | undefined {
   if (!tools?.length) return undefined
   const out: Record<string, CustomTool> = {}
   for (const tool of tools) {
     const name = tool.function?.name
     if (!name) continue
+    let description = tool.function.description
+    if (name === "skill" && skillCatalog && !description?.includes("<available_skills")) {
+      description = description ? `${description}\n\n${skillCatalog}` : skillCatalog
+    }
     out[name] = {
-      description: tool.function.description,
+      description,
       inputSchema: tool.function.parameters,
       execute: execute(name),
     }

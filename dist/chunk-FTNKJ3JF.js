@@ -1,12 +1,18 @@
 // src/runtime.ts
-function toolsToCustomTools(tools, execute) {
+function toolsToCustomTools(tools, execute, skillCatalog = "") {
   if (!tools?.length) return void 0;
   const out = {};
   for (const tool of tools) {
     const name = tool.function?.name;
     if (!name) continue;
+    let description = tool.function.description;
+    if (name === "skill" && skillCatalog && !description?.includes("<available_skills")) {
+      description = description ? `${description}
+
+${skillCatalog}` : skillCatalog;
+    }
     out[name] = {
-      description: tool.function.description,
+      description,
       inputSchema: tool.function.parameters,
       execute: execute(name)
     };

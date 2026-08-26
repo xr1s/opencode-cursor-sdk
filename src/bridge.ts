@@ -3,6 +3,7 @@ import {
   extractImages,
   followUpPrompt,
   openingPrompt,
+  skillCatalog,
   trailingToolResults,
 } from "./messages.js"
 import { resolveModelSelection, type CursorModelListItem, type CursorParameterValue } from "./models.js"
@@ -174,12 +175,15 @@ export class CursorBridge {
               mcp: false,
             }),
             continued: false,
+            resumed: false,
           }
       const agent = attached.agent
 
       const held = this.newHeld()
-      const customTools = toolsToCustomTools(request.tools, (name) =>
-        this.parkTool(held, name),
+      const customTools = toolsToCustomTools(
+        request.tools,
+        (name) => this.parkTool(held, name),
+        skillCatalog(request.messages),
       )
 
       let streamedText = false
@@ -198,10 +202,15 @@ export class CursorBridge {
       const streamed = () => (hasTools ? session.streamedText : streamedText)
 
       try {
-        const run = await agent.send({
-          text: attached.continued
+        // Resume restores the Cursor handle but not the first-turn system
+        // text. OpenCode already put AGENTS.md into this request's system
+        // messages — reuse those instead of loading the files ourselves.
+        const text =
+          attached.continued && !attached.resumed
             ? followUpPrompt(request.messages)
-            : openingPrompt(request.messages, { hasTools }),
+            : openingPrompt(request.messages, { hasTools })
+        const run = await agent.send({
+          text,
           images: extractImages(request.messages),
           customTools,
           force: true,
@@ -249,12 +258,12 @@ export class CursorBridge {
     session: Session,
     model: { id: string; params?: CursorParameterValue[] },
     refresh = false,
-  ): Promise<{ agent: CursorAgent; continued: boolean }> {
+  ): Promise<{ agent: CursorAgent; continued: boolean; resumed: boolean }> {
     if (refresh) {
       await session.agent?.dispose().catch(() => undefined)
       session.agent = undefined
     } else if (session.agent) {
-      return { agent: session.agent, continued: true }
+      return { agent: session.agent, continued: true, resumed: false }
     }
     const agentId = durableAgentId(session.sessionId, session.modelId, session.cwd)
     const input = {
@@ -265,10 +274,10 @@ export class CursorBridge {
       agentId,
     }
     try {
-      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true }
+      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true, resumed: true }
     } catch (error) {
       if (!isMissingAgentError(error) && !isAuthError(error)) throw error
-      return { agent: await this.runtime.createAgent(input), continued: false }
+      return { agent: await this.runtime.createAgent(input), continued: false, resumed: false }
     }
   }
 

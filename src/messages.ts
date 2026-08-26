@@ -77,6 +77,20 @@ export function openingPrompt(messages: ChatMessage[], opts?: { hasTools?: boole
   return lines.filter(Boolean).join("\n\n")
 }
 
+const SKILL_CATALOG_RE = /<available_skills\b[\s\S]*?<\/available_skills>/i
+
+/** OpenCode's skill name+description list, not SKILL.md bodies. */
+export function skillCatalog(messages: ChatMessage[]): string {
+  for (const message of messages) {
+    if (message.role !== "system" && message.role !== "developer") continue
+    const match = SKILL_CATALOG_RE.exec(textOf(message.content))
+    if (match) return match[0].trim()
+  }
+  return ""
+}
+
 export function followUpPrompt(messages: ChatMessage[]): string {
-  return latestUserText(messages).trim() || "Continue."
+  const user = latestUserText(messages).trim() || "Continue."
+  const catalog = skillCatalog(messages)
+  return catalog ? `${catalog}\n\n${user}` : user
 }

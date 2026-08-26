@@ -20,21 +20,25 @@ function scriptedRuntime(
   models: CursorModelListItem[] = [{ id: "composer-2.5" }],
 ): CursorRuntime & {
   prompts: string[]
+  skillDescs: Array<string | undefined>
   created: CreateAgentInput[]
   resumed: string[]
   disposed: number
 } {
   const prompts: string[] = []
+  const skillDescs: Array<string | undefined> = []
   const created: CreateAgentInput[] = []
   const resumed: string[] = []
   const store = new Map<string, CursorAgent>()
   const runtime: CursorRuntime & {
     prompts: string[]
+    skillDescs: Array<string | undefined>
     created: CreateAgentInput[]
     resumed: string[]
     disposed: number
   } = {
     prompts,
+    skillDescs,
     created,
     resumed,
     disposed: 0,
@@ -50,6 +54,7 @@ function scriptedRuntime(
         agentId,
         async send(sendInput: SendInput) {
           prompts.push(sendInput.text)
+          skillDescs.push(sendInput.customTools?.skill?.description)
           return {
             async wait() {
               let text = ""
@@ -351,6 +356,108 @@ test("a new process resumes the Cursor agent and does not replay history", async
   assert.equal(runtime.prompts[0], "first")
   assert.equal(runtime.prompts[1], "second")
   await second.dispose()
+})
+
+test("resume after process restart re-sends OpenCode system instructions", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "text", text: "one" },
+    { type: "end" },
+    { type: "text", text: "two" },
+  ])
+  const first = new CursorBridge({ apiKey: "k", cwd: "/tmp/proj", runtime })
+  await first.complete(
+    request({
+      tools: bashTools,
+      messages: [
+        { role: "system", content: "Instructions from: AGENTS.md\nYou are OpenCode." },
+        { role: "user", content: "first" },
+      ],
+    }),
+    { sessionId: "s-resume-agents" },
+  )
+  await first.dispose()
+  await resetBridges()
+
+  const second = new CursorBridge({ apiKey: "k", cwd: "/tmp/proj", runtime })
+  await second.complete(
+    request({
+      tools: bashTools,
+      messages: [
+        { role: "system", content: "Instructions from: AGENTS.md\nYou are OpenCode." },
+        { role: "user", content: "first" },
+        { role: "assistant", content: "one" },
+        { role: "user", content: "second" },
+      ],
+    }),
+    { sessionId: "s-resume-agents" },
+  )
+  assert.equal(runtime.created.length, 1)
+  assert.deepEqual(runtime.resumed, [durableAgentId("s-resume-agents", "composer-2.5", "/tmp/proj")])
+  assert.match(runtime.prompts[0] ?? "", /You are OpenCode/)
+  assert.match(runtime.prompts[0] ?? "", /first/)
+  assert.match(runtime.prompts[1] ?? "", /You are OpenCode/)
+  assert.match(runtime.prompts[1] ?? "", /second/)
+  assert.doesNotMatch(runtime.prompts[1] ?? "", /first/)
+  await second.dispose()
+})
+
+test("follow-up turns keep OpenCode skill catalog metadata", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "text", text: "one" },
+    { type: "end" },
+    { type: "text", text: "two" },
+  ])
+  const catalog = [
+    "<available_skills>",
+    "  <skill>",
+    "    <name>helper-zoom-docs</name>",
+    "    <description>Zoom Docs via helper zoom CLI.</description>",
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n")
+  const skillTools = [
+    ...bashTools,
+    {
+      type: "function",
+      function: {
+        name: "skill",
+        description: "Load a specialized skill when the task matches one listed in the system prompt.",
+        parameters: { type: "object", properties: { name: { type: "string" } } },
+      },
+    },
+  ]
+  const skills = `Skills provide specialized instructions.\n${catalog}`
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  await bridge.complete(
+    request({
+      tools: skillTools,
+      messages: [
+        { role: "system", content: skills },
+        { role: "user", content: "first" },
+      ],
+    }),
+    { sessionId: "s-skills" },
+  )
+  await bridge.complete(
+    request({
+      tools: skillTools,
+      messages: [
+        { role: "system", content: skills },
+        { role: "user", content: "first" },
+        { role: "assistant", content: "one" },
+        { role: "user", content: "https://docs.zoom.us/doc/abc" },
+      ],
+    }),
+    { sessionId: "s-skills" },
+  )
+  assert.match(runtime.prompts[1] ?? "", /helper-zoom-docs/)
+  assert.match(runtime.prompts[1] ?? "", /docs\.zoom\.us\/doc\/abc/)
+  assert.doesNotMatch(runtime.prompts[1] ?? "", /# helper zoom docs/)
+  assert.match(runtime.skillDescs[0] ?? "", /helper-zoom-docs/)
+  assert.match(runtime.skillDescs[1] ?? "", /helper-zoom-docs/)
+  await bridge.dispose()
 })
 
 test("eventsToCompletion builds an OpenAI-shaped tool_calls response", () => {

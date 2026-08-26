@@ -10,7 +10,7 @@ import {
   setDefaultRuntime,
   toConfigModels,
   toolsToCustomTools
-} from "./chunk-FNAYAQNF.js";
+} from "./chunk-FTNKJ3JF.js";
 
 // src/index.ts
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -97,8 +97,21 @@ function openingPrompt(messages, opts) {
   if (!opts?.hasTools) lines.push(NO_TOOLS_GUARD);
   return lines.filter(Boolean).join("\n\n");
 }
+var SKILL_CATALOG_RE = /<available_skills\b[\s\S]*?<\/available_skills>/i;
+function skillCatalog(messages) {
+  for (const message of messages) {
+    if (message.role !== "system" && message.role !== "developer") continue;
+    const match = SKILL_CATALOG_RE.exec(textOf(message.content));
+    if (match) return match[0].trim();
+  }
+  return "";
+}
 function followUpPrompt(messages) {
-  return latestUserText(messages).trim() || "Continue.";
+  const user = latestUserText(messages).trim() || "Continue.";
+  const catalog = skillCatalog(messages);
+  return catalog ? `${catalog}
+
+${user}` : user;
 }
 
 // src/bridge.ts
@@ -186,13 +199,15 @@ var CursorBridge = class {
           model,
           mcp: false
         }),
-        continued: false
+        continued: false,
+        resumed: false
       };
       const agent = attached.agent;
       const held = this.newHeld();
       const customTools = toolsToCustomTools(
         request.tools,
-        (name) => this.parkTool(held, name)
+        (name) => this.parkTool(held, name),
+        skillCatalog(request.messages)
       );
       let streamedText = false;
       let keepHeld = false;
@@ -208,8 +223,9 @@ var CursorBridge = class {
       };
       const streamed = () => hasTools ? session.streamedText : streamedText;
       try {
+        const text = attached.continued && !attached.resumed ? followUpPrompt(request.messages) : openingPrompt(request.messages, { hasTools });
         const run = await agent.send({
-          text: attached.continued ? followUpPrompt(request.messages) : openingPrompt(request.messages, { hasTools }),
+          text,
           images: extractImages(request.messages),
           customTools,
           force: true,
@@ -257,7 +273,7 @@ var CursorBridge = class {
       await session.agent?.dispose().catch(() => void 0);
       session.agent = void 0;
     } else if (session.agent) {
-      return { agent: session.agent, continued: true };
+      return { agent: session.agent, continued: true, resumed: false };
     }
     const agentId = durableAgentId(session.sessionId, session.modelId, session.cwd);
     const input = {
@@ -268,10 +284,10 @@ var CursorBridge = class {
       agentId
     };
     try {
-      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true };
+      return { agent: await this.runtime.resumeAgent(agentId, input), continued: true, resumed: true };
     } catch (error) {
       if (!isMissingAgentError(error) && !isAuthError(error)) throw error;
-      return { agent: await this.runtime.createAgent(input), continued: false };
+      return { agent: await this.runtime.createAgent(input), continued: false, resumed: false };
     }
   }
   async resumeHeld(session, results, queue, abort) {

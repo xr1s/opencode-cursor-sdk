@@ -72,6 +72,26 @@ test("followUpPrompt uses the latest user text", () => {
   )
 })
 
+test("followUpPrompt keeps OpenCode skill catalog metadata", () => {
+  const catalog = [
+    "<available_skills>",
+    "  <skill>",
+    "    <name>helper-zoom-docs</name>",
+    "    <description>Zoom Docs via helper zoom CLI.</description>",
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n")
+  const text = followUpPrompt([
+    { role: "system", content: `Skills provide specialized instructions.\n${catalog}` },
+    { role: "user", content: "one" },
+    { role: "assistant", content: "ok" },
+    { role: "user", content: "https://docs.zoom.us/doc/abc" },
+  ])
+  assert.match(text, /helper-zoom-docs/)
+  assert.match(text, /docs\.zoom\.us\/doc\/abc/)
+  assert.doesNotMatch(text, /# helper zoom docs/)
+})
+
 test("parseDataUrl and extractImages read base64 image parts", () => {
   const parsed = parseDataUrl("data:image/png;base64,abcd")
   assert.deepEqual(parsed, { mimeType: "image/png", data: "abcd" })

@@ -3,7 +3,7 @@ import {
   PACKAGE_MARKER,
   loadSdkRuntime,
   toConfigModels
-} from "./chunk-FNAYAQNF.js";
+} from "./chunk-FTNKJ3JF.js";
 
 // src/plugin-core.ts
 import { homedir } from "os";
