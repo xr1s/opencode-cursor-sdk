@@ -236,6 +236,37 @@ test("title-style calls do not mix into a held tool loop", async () => {
   await bridge.dispose()
 })
 
+test("hold-mode remaps Cursor glob_pattern onto OpenCode pattern", async () => {
+  await resetBridges()
+  const runtime = scriptedRuntime([
+    { type: "tool", name: "glob", args: { glob_pattern: "**/*.ts", target_directory: "/tmp" }, id: "call_g" },
+  ])
+  const bridge = new CursorBridge({ apiKey: "k", runtime })
+  const events = await bridge.complete(
+    request({
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "glob",
+            description: "Find files",
+            parameters: { type: "object", properties: { pattern: { type: "string" } } },
+          },
+        },
+      ],
+      messages: [{ role: "user", content: "find ts" }],
+    }),
+    { sessionId: "s-glob-compat" },
+  )
+  const toolEvent = events.find((event) => event.type === "tool_calls")
+  assert.ok(toolEvent && toolEvent.type === "tool_calls")
+  assert.deepEqual(JSON.parse(toolEvent.calls[0].arguments), {
+    pattern: "**/*.ts",
+    path: "/tmp",
+  })
+  await bridge.dispose()
+})
+
 test("throwaway turns send an opening prompt, not a follow-up", async () => {
   await resetBridges()
   const runtime = scriptedRuntime([{ type: "text", text: "ok" }])

@@ -35,6 +35,67 @@ function compatToolCallId(raw) {
   return `call_${digest}`;
 }
 
+// src/tool-args.ts
+var TOOL_FIELDS = {
+  glob: {
+    pattern: ["pattern", "glob_pattern", "globPattern"],
+    path: ["path", "target_directory", "targetDirectory", "directory"]
+  },
+  grep: {
+    pattern: ["pattern", "regex", "query"],
+    path: ["path", "target_directory", "targetDirectory"],
+    include: ["include", "glob", "glob_pattern", "globPattern"]
+  },
+  read: {
+    filePath: ["filePath", "file_path", "target_file", "targetFile", "path"],
+    offset: ["offset"],
+    limit: ["limit"]
+  },
+  edit: {
+    filePath: ["filePath", "file_path", "target_file", "targetFile", "path"],
+    oldString: ["oldString", "old_string"],
+    newString: ["newString", "new_string"],
+    replaceAll: ["replaceAll", "replace_all"]
+  },
+  write: {
+    filePath: ["filePath", "file_path", "target_file", "targetFile", "path"],
+    content: ["content", "contents"]
+  },
+  bash: {
+    command: ["command", "cmd"],
+    workdir: ["workdir", "working_directory", "workingDirectory", "cwd"],
+    timeout: ["timeout", "block_until_ms"]
+  },
+  webfetch: {
+    url: ["url", "uri"],
+    format: ["format"]
+  },
+  skill: {
+    name: ["name", "skill", "skill_name", "skillName", "id"]
+  }
+};
+function present(value) {
+  return value !== void 0 && value !== null && value !== "";
+}
+function compatToolArgs(name, args) {
+  const fields = TOOL_FIELDS[name.toLowerCase()];
+  const out = { ...args ?? {} };
+  if (!fields) return out;
+  for (const [canonical, aliases] of Object.entries(fields)) {
+    if (!present(out[canonical])) {
+      for (const alias of aliases) {
+        if (alias === canonical || !present(out[alias])) continue;
+        out[canonical] = out[alias];
+        break;
+      }
+    }
+    for (const alias of aliases) {
+      if (alias !== canonical) delete out[alias];
+    }
+  }
+  return out;
+}
+
 // src/messages.ts
 var NO_TOOLS_GUARD = "Do not call tools, search the filesystem, or run shell commands. Reply with text only.";
 function textOf(content) {
@@ -410,7 +471,7 @@ var CursorBridge = class {
       const parked = {
         id,
         name,
-        args: args ?? {},
+        args: compatToolArgs(name, args ?? {}),
         resolve,
         reject
       };

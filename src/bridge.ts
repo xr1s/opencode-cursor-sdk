@@ -1,4 +1,5 @@
 import { compatToolCallId, durableAgentId } from "./agent-id.js"
+import { compatToolArgs } from "./tool-args.js"
 import {
   extractImages,
   followUpPrompt,
@@ -433,7 +434,7 @@ export class CursorBridge {
         const parked: ParkedTool = {
           id,
           name,
-          args: (args ?? {}) as Record<string, unknown>,
+          args: compatToolArgs(name, (args ?? {}) as Record<string, unknown>),
           resolve,
           reject,
         }
