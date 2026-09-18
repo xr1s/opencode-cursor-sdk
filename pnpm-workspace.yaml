@@ -1,0 +1,13 @@
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - '@ai-sdk/openai-compatible@3.0.52'
+  - '@ai-sdk/provider-utils@5.0.44'
+  - '@opencode/ai@2.0.8'
+  - '@opencode/client@2.0.8'
+  - '@opencode/plugin@2.0.8'
+  - '@opencode/protocol@2.0.8'
+  - '@opencode/schema@2.0.8'
+  - '@opencode/util@2.0.8'

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "cursor": {
+      "name": "Cursor",
+      "package": "aisdk:file:///absolute/path/to/opencode-cursor-sdk"
+    }
+  },
+  "plugins": ["file:///absolute/path/to/opencode-cursor-sdk"]
+}

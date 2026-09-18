@@ -1,0 +1,39 @@
+{
+  "name": "opencode-cursor-sdk",
+  "version": "0.0.1",
+  "description": "OpenCode AI SDK provider backed by the Cursor TypeScript SDK",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./server": {
+      "types": "./dist/plugin.d.mts",
+      "import": "./dist/plugin.mjs"
+    }
+  },
+  "files": ["dist", "README.md", "README-cn.md"],
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepublishOnly": "tsdown",
+    "test": "tsx --test --test-reporter=spec test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.52",
+    "@cursor/sdk": "^1.0.31",
+    "@opencode/plugin": "2.0.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "tsdown": "^0.23.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

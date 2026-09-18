@@ -1,0 +1,10 @@
+import {
+  CURSOR_PACKAGE_NAME,
+  CURSOR_PROVIDER_NAME,
+} from "../provider/identity.js"
+
+export { CURSOR_PACKAGE_NAME, CURSOR_PROVIDER_NAME }
+
+export const CURSOR_PLUGIN_ID = CURSOR_PACKAGE_NAME
+export const CURSOR_OAUTH_METHOD_ID = "browser"
+export const CURSOR_API_KEY_ENVIRONMENT = "CURSOR_API_KEY"
